@@ -1,0 +1,39 @@
+# Python
+**/__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Environments
+.env
+.venv
+env/
+venv/
+*.egg-info/
+
+# Jupyter
+**/.ipynb_checkpoints/
+
+# Editor
+**/.vscode/
+*.code-workspace
+
+# OS
+**/.DS_Store
+**/Thumbs.db
+
+# Data
+**/data/raw/*
+**/data/interim/*
+**/data/processed/*
+!**/data/raw/.gitkeep
+!**/data/interim/.gitkeep
+!**/data/processed/.gitkeep
+
+# Results
+**/results/figures/*
+!**/results/figures/.gitkeep
+
+# Models
+**/models/*
+!**/models/.gitkeep
