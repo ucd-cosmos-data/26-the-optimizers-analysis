@@ -24,10 +24,6 @@ venv/
 
 # Data
 **/data/raw/*
-
-!group survey/data/raw/
-!group survey/data/raw/**
-
 **/data/interim/*
 **/data/processed/*
 !**/data/raw/.gitkeep
