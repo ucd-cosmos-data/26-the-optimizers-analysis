@@ -29,6 +29,8 @@ venv/
 !**/data/raw/.gitkeep
 !**/data/interim/.gitkeep
 !**/data/processed/.gitkeep
+!group_survey/data/raw/*
+!group_survey/data/interim/*
 
 # Results
 **/results/figures/*
