@@ -1,0 +1,22 @@
+roommate_cluster,same_grade,similar_sleep_schedule,roommate_rating,shared_interest
+14,True,True,9,Sports
+4,True,True,8,Sports
+11,False,True,6,No shared interest
+3,True,True,8,Sports
+13,True,True,8,Sports
+5,True,True,8,Sports
+4,False,True,7,No shared interest
+13,True,True,9,Arts
+2,True,True,9,Academics
+13,False,False,5,No shared interest
+11,True,True,8,Sports
+7,True,True,5,No shared interest
+12,True,True,8,Academics
+5,True,False,8,Academics
+12,True,True,7,Sports
+3,True,True,8,Sports
+1,True,True,6,Academics
+10,True,True,6,No shared interest
+8,True,False,7,Academics
+1,True,True,4,Academics
+13,True,True,8,Arts
