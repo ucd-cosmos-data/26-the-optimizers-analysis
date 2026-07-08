@@ -1,22 +1,22 @@
-submitted_at,roommate_cluster,same_grade,similar_sleep_schedule,roommate_rating,shared_interest
-2026-07-07 11:47:11-06:00,14,True,True,9,Sports
-2026-07-07 11:47:18-06:00,4,True,True,8,Sports
-2026-07-07 11:47:20-06:00,11,False,True,6,No shared interest
-2026-07-07 11:47:20-06:00,3,True,True,8,Sports
-2026-07-07 11:47:20-06:00,13,True,True,8,Sports
-2026-07-07 11:47:39-06:00,5,True,True,8,Sports
-2026-07-07 11:47:43-06:00,4,False,True,7,No shared interest
-2026-07-07 11:47:59-06:00,13,True,True,9,Arts
-2026-07-07 11:48:19-06:00,2,True,True,9,Academics
-2026-07-07 11:48:21-06:00,13,False,False,5,No shared interest
-2026-07-07 11:48:25-06:00,11,True,True,8,Sports
-2026-07-07 11:48:54-06:00,7,True,True,5,No shared interest
-2026-07-07 11:49:11-06:00,12,True,True,8,Academics
-2026-07-07 11:49:36-06:00,5,True,False,8,Academics
-2026-07-07 11:49:48-06:00,12,True,True,7,Sports
-2026-07-07 11:50:50-06:00,3,True,True,8,Sports
-2026-07-07 11:50:51-06:00,1,True,True,6,Academics
-2026-07-07 11:51:00-06:00,10,True,True,6,No shared interest
-2026-07-07 11:51:01-06:00,8,True,False,7,Academics
-2026-07-07 11:51:02-06:00,1,True,True,4,Academics
-2026-07-07 11:54:38-06:00,13,True,True,8,Arts
+roommate_cluster,same_grade,similar_sleep_schedule,roommate_rating,shared_interest
+14,True,True,9,Sports
+4,True,True,8,Sports
+11,False,True,6,No shared interest
+3,True,True,8,Sports
+13,True,True,8,Sports
+5,True,True,8,Sports
+4,False,True,7,No shared interest
+13,True,True,9,Arts
+2,True,True,9,Academics
+13,False,False,5,No shared interest
+11,True,True,8,Sports
+7,True,True,5,No shared interest
+12,True,True,8,Academics
+5,True,False,8,Academics
+12,True,True,7,Sports
+3,True,True,8,Sports
+1,True,True,6,Academics
+10,True,True,6,No shared interest
+8,True,False,7,Academics
+1,True,True,4,Academics
+13,True,True,8,Arts

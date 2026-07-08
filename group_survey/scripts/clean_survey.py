@@ -9,7 +9,6 @@ INTERIM_PATH = PROJECT_DIR / "data" / "interim" / "optimizers_survey_clean.csv"
 
 
 COLUMN_MAP = {
-    "Timestamp": "submitted_at",
     "What cluster is your roommate in?": "roommate_cluster",
     "Are you and your roommate in the same grade?": "same_grade",
     "Do you and your roommate share similar sleeping schedules?": "similar_sleep_schedule",
@@ -25,7 +24,8 @@ def clean_survey(raw_path: Path = RAW_PATH) -> pd.DataFrame:
     form_metadata_cols = [
         col
         for col in df.columns
-        if col == "Total score" or col.endswith("[Score]") or col.endswith("[Feedback]")
+        if col in {"Total score", "Timestamp"}
+        or col.endswith("[Score]") or col.endswith("[Feedback]")
     ]
     df = df.drop(columns=form_metadata_cols).rename(columns=COLUMN_MAP)
 
@@ -38,11 +38,6 @@ def clean_survey(raw_path: Path = RAW_PATH) -> pd.DataFrame:
     for col in df.columns:
         if pd.api.types.is_string_dtype(df[col]):
             df[col] = df[col].str.strip()
-
-    df["submitted_at"] = pd.to_datetime(
-        df["submitted_at"].str.removesuffix(" MDT"),
-        format="%Y/%m/%d %I:%M:%S %p",
-    ).dt.tz_localize("America/Denver")
 
     df["roommate_cluster"] = (
         df["roommate_cluster"].str.extract(r"^\s*(\d+)", expand=False).astype("Int64")
