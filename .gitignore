@@ -31,6 +31,9 @@ venv/
 !**/data/processed/.gitkeep
 !group_survey/data/raw/*
 !group_survey/data/interim/*
+!mini1/data/raw/data.csv
+!mini1/data/raw/depression_ca.csv
+!mini1/data/interim/depression_precipitation.csv
 
 # Results
 **/results/figures/*
