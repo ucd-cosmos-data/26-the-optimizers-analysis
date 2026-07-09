@@ -33,7 +33,7 @@ venv/
 !group_survey/data/interim/*
 !mini1/data/raw/data.csv
 !mini1/data/raw/depression_ca.csv
-!mini1/data/interim/depression_precipitation.csv
+!mini1/data/interim/depression_precipitation_ca.csv
 
 # Results
 **/results/figures/*
