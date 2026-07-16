@@ -42,3 +42,25 @@ venv/
 # Models
 **/models/*
 !**/models/.gitkeep
+
+# Track Mini Project 2 source files and the required final figure
+!mini2/
+!mini2/README.md
+!mini2/notebooks/
+!mini2/notebooks/*.ipynb
+!mini2/data/
+!mini2/data/.gitkeep
+!mini2/data/raw/
+!mini2/data/raw/.gitkeep
+!mini2/data/interim/
+!mini2/data/interim/.gitkeep
+!mini2/data/interim/ca_counties.geojson
+!mini2/data/processed/
+!mini2/data/processed/.gitkeep
+!mini2/models/
+!mini2/models/.gitkeep
+!mini2/results/
+!mini2/results/.gitkeep
+!mini2/results/figures/
+!mini2/results/figures/.gitkeep
+!mini2/results/figures/california_housing_kmeans_regions.png
