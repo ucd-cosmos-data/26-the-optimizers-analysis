@@ -29,6 +29,15 @@ venv/
 !**/data/raw/.gitkeep
 !**/data/interim/.gitkeep
 !**/data/processed/.gitkeep
+
+# Final project data (large raw downloads and generated datasets)
+final_project/data/raw/**
+final_project/data/interim/**
+final_project/data/processed/**
+!final_project/data/raw/.gitkeep
+!final_project/data/interim/.gitkeep
+!final_project/data/processed/.gitkeep
+
 !group_survey/data/raw/*
 !group_survey/data/interim/*
 !mini1/data/raw/data.csv
