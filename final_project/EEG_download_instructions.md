@@ -18,7 +18,7 @@ raw data comes from PhysioNet and remains unchanged.
 The downloaded subject folders and filenames are preserved under:
 
 ```text
-/Users/advaitghosh/Documents/cosmos/26-the-optimizers-analysis/final_project/data/raw
+\Users\shrey\OneDrive\Desktop\Cosmos\26-the-optimizers-analysis\final_project\data\raw>
 ├── PN00/
 ├── PN01/
 ├── ...
