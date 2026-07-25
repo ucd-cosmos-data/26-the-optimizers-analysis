@@ -40,6 +40,12 @@ leaking adjacent recordings from the same person into both sets.
 The current held-out results are summarized below. Average precision is the
 most useful headline metric here because seizure windows are rare.
 
+Report-ready diagrams are saved in `results/figures/`:
+
+- `01_analysis_pipeline.png`: processing and modeling workflow
+- `02_frequency_bands.png`: delta, theta, alpha, beta, and gamma ranges
+- `03_model_performance.png`: model scores and the best model's confusion matrix
+
 | Model | Balanced accuracy | F1 | ROC-AUC | Average precision |
 | --- | ---: | ---: | ---: | ---: |
 | Logistic regression | 0.533 | 0.053 | 0.572 | 0.063 |
@@ -58,4 +64,10 @@ To reuse the existing feature CSV and retrain only the models:
 
 ```powershell
 python final_project/scripts/extract_bandpowers_and_train.py --reuse-features
+```
+
+To regenerate the diagrams after updating the metrics:
+
+```powershell
+python final_project/scripts/make_figures.py
 ```
