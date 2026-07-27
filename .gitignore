@@ -47,6 +47,7 @@ final_project/data/processed/**
 # Results
 **/results/figures/*
 !**/results/figures/.gitkeep
+!final_project/results/figures/*.png
 
 # Models
 **/models/*
