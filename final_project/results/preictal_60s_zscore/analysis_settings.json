@@ -1,0 +1,66 @@
+{
+  "bands_hz": {
+    "delta": [
+      1.0,
+      4.0
+    ],
+    "theta": [
+      4.0,
+      8.0
+    ],
+    "alpha": [
+      8.0,
+      13.0
+    ],
+    "beta": [
+      13.0,
+      30.0
+    ],
+    "gamma": [
+      30.0,
+      45.0
+    ]
+  },
+  "preictal_seconds": 60,
+  "window_seconds": 6,
+  "window_midpoints_seconds": [
+    -57,
+    -51,
+    -45,
+    -39,
+    -33,
+    -27,
+    -21,
+    -15,
+    -9,
+    -3
+  ],
+  "welch": {
+    "window": "Hann",
+    "segment_seconds": 4,
+    "overlap_percent": 50,
+    "scaling": "density"
+  },
+  "artifact_handling": {
+    "minimum_channels_per_band_window": 10,
+    "minimum_channel_std_uv": 0.5,
+    "maximum_channel_absolute_uv": 1000.0,
+    "maximum_clipped_fraction": 0.01
+  },
+  "reference": "common median across EEG-labelled channels per window",
+  "line_noise_filter": "60 Hz IIR notch (Q=30) when sampling rate permits",
+  "relative_power": "per-channel band power divided by summed power in EDF-filter-valid requested bands; median across valid channels",
+  "filter_validity": "declared HP <= band lower edge and declared LP >= band upper edge, plus Nyquist >= band upper edge",
+  "interictal": {
+    "block_seconds": 60,
+    "window_seconds": 6,
+    "buffer_minutes": 15,
+    "blocks_per_seizure_target": 3,
+    "selection": "deterministic evenly-spaced sample of clean patient-specific 60-s candidate blocks"
+  },
+  "normalization": "z = (window relative power - patient interictal mean) / patient interictal SD",
+  "annotated_seizures": 47,
+  "analyzed_seizures": 47,
+  "analyzed_patients": 14,
+  "baseline_blocks": 141
+}
