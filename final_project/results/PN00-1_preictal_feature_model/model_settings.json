@@ -1,0 +1,56 @@
+{
+  "recording": "PN00-1.edf",
+  "seizure_onset_seconds": 1143,
+  "seizure_end_seconds": 1213,
+  "window_seconds": 6,
+  "interictal_buffer_seconds": 900,
+  "bands_hz": {
+    "theta": [
+      4.0,
+      8.0
+    ],
+    "alpha": [
+      8.0,
+      13.0
+    ],
+    "beta": [
+      13.0,
+      30.0
+    ]
+  },
+  "model_features": [
+    "median_rms_uv",
+    "median_line_length_uv_per_sample",
+    "median_hjorth_mobility",
+    "median_hjorth_complexity",
+    "median_spectral_entropy",
+    "median_theta_relative_power",
+    "median_alpha_relative_power",
+    "median_beta_relative_power",
+    "spatial_iqr_line_length_uv_per_sample"
+  ],
+  "summary": {
+    "model": "Baseline-only robust multivariate anomaly score",
+    "model_features": [
+      "median_rms_uv",
+      "median_line_length_uv_per_sample",
+      "median_hjorth_mobility",
+      "median_hjorth_complexity",
+      "median_spectral_entropy",
+      "median_theta_relative_power",
+      "median_alpha_relative_power",
+      "median_beta_relative_power",
+      "spatial_iqr_line_length_uv_per_sample"
+    ],
+    "baseline_windows": 124,
+    "preictal_windows": 10,
+    "threshold_definition": "95th percentile of clean interictal anomaly scores",
+    "threshold": 4.194751895154965,
+    "interictal_flag_rate_percent": 5.64516129032258,
+    "preictal_flag_rate_percent": 20.0,
+    "preictal_score_median": 1.2126162639209341,
+    "interictal_score_median": 0.8928290361563038,
+    "earliest_flagged_preictal_midpoint_seconds": -57.0
+  },
+  "limitation": "One seizure only: no independent predictive validation is possible."
+}
