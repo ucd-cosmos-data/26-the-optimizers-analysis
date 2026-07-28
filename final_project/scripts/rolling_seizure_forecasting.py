@@ -1,9 +1,10 @@
 """Discrete-time seizure forecasting from EDF scalp EEG recordings.
 
 This module supports the companion ``rolling_seizure_forecasting.ipynb``.
-It implements a fixed five-minute forecast episode that updates only at
-five-second landmarks.  A discrete hazard model produces an internally
-consistent distribution over 60 possible onset bins plus a separate
+It implements a rolling five-minute forecast that updates only at five-second
+landmarks.  When one interval expires, one interval is appended at the far
+end, so every forecast still covers 60 future bins.  A discrete hazard model
+produces an internally consistent distribution over those bins plus a separate
 ``no seizure in the next five minutes`` outcome.
 
 The implementation is an exploratory research model, not a medical device.
@@ -16,6 +17,7 @@ from pathlib import Path
 from typing import Any, Iterable
 import json
 import math
+import time
 import warnings
 
 import joblib
@@ -28,7 +30,8 @@ from sklearn.metrics import average_precision_score, roc_auc_score
 from sklearn.model_selection import GroupShuffleSplit
 
 
-MODULE_VERSION = "1.0.0"
+MODULE_VERSION = "2.0.0"
+FEATURE_CACHE_VERSION = "1.0.0"
 BIN_SECONDS = 5
 HORIZON_SECONDS = 300
 CONTEXT_SECONDS = 120
@@ -467,7 +470,9 @@ def build_episode_manifest(
                 "recording": row.recording,
                 "edf_path": str(path),
                 "anchor_seconds": anchor,
-                "fixed_end_seconds": anchor + config.horizon_seconds,
+                "training_episode_end_seconds": (
+                    anchor + config.horizon_seconds
+                ),
                 "event_onset_seconds": float(row.onset_seconds),
             }
         )
@@ -549,7 +554,7 @@ def build_episode_manifest(
                     "recording": row.recording,
                     "edf_path": row.edf_path,
                     "anchor_seconds": float(row.anchor_seconds),
-                    "fixed_end_seconds": float(
+                    "training_episode_end_seconds": float(
                         row.anchor_seconds + config.horizon_seconds
                     ),
                     "event_onset_seconds": np.nan,
@@ -610,7 +615,9 @@ def _episode_landmarks(
             "recording": episode["recording"],
             "edf_path": episode["edf_path"],
             "anchor_seconds": float(episode["anchor_seconds"]),
-            "fixed_end_seconds": float(episode["fixed_end_seconds"]),
+            "training_episode_end_seconds": float(
+                episode["training_episode_end_seconds"]
+            ),
             "landmark_step": step,
             "landmark_seconds": landmark,
             "time_to_event_seconds": time_to_event,
@@ -628,7 +635,7 @@ def _cache_signature(
     manifest: pd.DataFrame, config: ForecastConfig
 ) -> dict[str, Any]:
     return {
-        "module_version": MODULE_VERSION,
+        "module_version": FEATURE_CACHE_VERSION,
         "config": asdict(config),
         "episode_ids": manifest["episode_id"].tolist(),
         "recordings": sorted(manifest["recording"].unique().tolist()),
@@ -1114,45 +1121,55 @@ def extract_context_features_from_edf(
     return pd.DataFrame([aggregated], columns=MODEL_FEATURE_COLUMNS)
 
 
-def fixed_episode_forecast_table(
+def moving_horizon_forecast_table(
     pmf: np.ndarray,
     episode_step: int,
     config: ForecastConfig = ForecastConfig(),
 ) -> tuple[pd.DataFrame, float]:
-    """Drop elapsed rectangles without extending the original episode end."""
+    """Return 60 future bins, shifted by ``episode_step`` from the anchor."""
 
     pmf = np.asarray(pmf, dtype=float).reshape(-1)
     if len(pmf) != N_BINS:
         raise ValueError(f"Expected {N_BINS} event-bin probabilities.")
-    if not 0 <= episode_step < N_BINS:
-        raise ValueError(f"episode_step must be in [0, {N_BINS - 1}].")
-    remaining = N_BINS - episode_step
-    visible = pmf[:remaining].copy()
+    if episode_step < 0:
+        raise ValueError("episode_step must be nonnegative.")
+    visible = pmf.copy()
     event_risk = float(visible.sum())
-    no_event_by_fixed_end = float(1.0 - event_risk)
+    no_event_next_5m = float(1.0 - event_risk)
     conditional = (
         visible / event_risk if event_risk > 1e-12 else np.zeros_like(visible)
     )
     cumulative = np.cumsum(visible)
-    absolute_bins = np.arange(episode_step + 1, N_BINS + 1)
+    absolute_bins = np.arange(episode_step + 1, episode_step + N_BINS + 1)
     table = pd.DataFrame(
         {
             "absolute_episode_bin": absolute_bins,
             "interval_start_seconds": (absolute_bins - 1) * config.bin_seconds,
             "interval_end_seconds": absolute_bins * config.bin_seconds,
-            "seconds_ahead_start": np.arange(remaining) * config.bin_seconds,
-            "seconds_ahead_end": (np.arange(remaining) + 1) * config.bin_seconds,
+            "seconds_ahead_start": np.arange(N_BINS) * config.bin_seconds,
+            "seconds_ahead_end": (np.arange(N_BINS) + 1) * config.bin_seconds,
             "onset_probability": visible,
             "timing_probability_given_event": conditional,
             "cumulative_onset_probability": cumulative,
             "survival_probability": 1.0 - cumulative,
         }
     )
-    return table, no_event_by_fixed_end
+    return table, no_event_next_5m
+
+
+# Backward-compatible name for code that imported the original helper.  Its
+# behavior is intentionally the new moving-horizon behavior.
+fixed_episode_forecast_table = moving_horizon_forecast_table
 
 
 class RollingForecastEngine:
-    """Boundary-triggered EDF forecaster with a fixed, shrinking episode end."""
+    """Optimized offline rolling forecaster with a constant 60-bin horizon.
+
+    The expensive work is performed once: a contiguous prerecorded EEG replay
+    is read once, five-second features are cached, all overlapping 120-second
+    contexts are formed, and every 60-bin forecast is evaluated in one model
+    batch.  ``advance_to`` then performs a cached lookup at each boundary.
+    """
 
     def __init__(
         self,
@@ -1160,85 +1177,135 @@ class RollingForecastEngine:
         edf_path: str | Path,
         episode_anchor_seconds: float,
         config: ForecastConfig = ForecastConfig(),
+        replay_duration_seconds: int = HORIZON_SECONDS,
     ) -> None:
+        config.validate()
+        if replay_duration_seconds < 0:
+            raise ValueError("replay_duration_seconds must be nonnegative.")
+        if replay_duration_seconds % config.bin_seconds:
+            raise ValueError(
+                "replay_duration_seconds must be divisible by bin_seconds."
+            )
         self.model = model
         self.edf_path = Path(edf_path)
         self.episode_anchor_seconds = float(episode_anchor_seconds)
-        self.fixed_end_seconds = self.episode_anchor_seconds + config.horizon_seconds
         self.config = config
+        self.replay_duration_seconds = int(replay_duration_seconds)
+        self.replay_end_seconds = (
+            self.episode_anchor_seconds + self.replay_duration_seconds
+        )
+        self.max_step = self.replay_duration_seconds // self.config.bin_seconds
         self.last_step = -1
-        self.recomputation_count = 0
+        self.update_count = 0
         self.last_result: dict[str, Any] | None = None
+        self._precompute()
+
+    def _precompute(self) -> None:
+        started = time.perf_counter()
+        read_start = self.episode_anchor_seconds - self.config.context_seconds
+        read_duration = (
+            self.config.context_seconds + self.replay_duration_seconds
+        )
+        data, sample_rate, labels = read_edf_eeg_segment(
+            self.edf_path,
+            read_start,
+            read_duration,
+            min_channels=self.config.min_eeg_channels,
+        )
+        micro = segment_micro_features(data, sample_rate, self.config)
+        expected_micro = (
+            self.config.context_seconds + self.replay_duration_seconds
+        ) // self.config.bin_seconds
+        if len(micro) != expected_micro:
+            raise AssertionError(
+                f"Expected {expected_micro} cached micro-windows, found {len(micro)}."
+            )
+        contexts = np.vstack(
+            [
+                aggregate_context(
+                    micro[step : step + MICRO_WINDOWS_PER_CONTEXT]
+                )
+                for step in range(self.max_step + 1)
+            ]
+        )
+        self.context_features = pd.DataFrame(
+            contexts, columns=MODEL_FEATURE_COLUMNS
+        )
+        (
+            self.precomputed_hazards,
+            self.precomputed_pmf,
+            self.precomputed_no_event,
+        ) = predict_horizon_distribution(self.model, self.context_features)
+        self.precomputed_tables = [
+            moving_horizon_forecast_table(
+                self.precomputed_pmf[step], step, self.config
+            )[0]
+            for step in range(self.max_step + 1)
+        ]
+        self.source_sample_rate = float(sample_rate)
+        self.eeg_channel_count = len(labels)
+        self.precomputation_seconds = time.perf_counter() - started
+        self.optimization_stats = {
+            "forecast_states_precomputed": self.max_step + 1,
+            "eeg_seconds_processed_once": read_duration,
+            "naive_eeg_seconds_if_full_context_reread": (
+                (self.max_step + 1) * self.config.context_seconds
+            ),
+            "raw_signal_work_reduction_factor": (
+                (self.max_step + 1) * self.config.context_seconds / read_duration
+            ),
+            "online_edf_reads": 0,
+            "online_model_calls": 0,
+            "precomputation_seconds": self.precomputation_seconds,
+        }
 
     def advance_to(self, recording_seconds: float) -> dict[str, Any]:
-        """Update only after a new five-second boundary has been crossed."""
+        """Return a new cached 60-bin forecast only at a crossed boundary."""
 
         elapsed = float(recording_seconds) - self.episode_anchor_seconds
         if elapsed < 0:
             raise ValueError("recording_seconds precedes the episode anchor.")
-        if elapsed >= self.config.horizon_seconds:
-            if self.last_step >= N_BINS and self.last_result is not None:
-                return {**self.last_result, "recomputed": False}
-            self.last_step = N_BINS
-            self.last_result = {
-                "episode_step": N_BINS,
-                "landmark_seconds": self.fixed_end_seconds,
-                "fixed_end_seconds": self.fixed_end_seconds,
-                "remaining_bins": 0,
-                "event_risk_by_fixed_end": np.nan,
-                "no_event_probability_by_fixed_end": np.nan,
-                "no_event_probability_next_5m": np.nan,
-                "hazards_next_5m": np.asarray([], dtype=float),
-                "pmf_next_5m": np.asarray([], dtype=float),
-                "probability_table": pd.DataFrame(
-                    columns=[
-                        "absolute_episode_bin",
-                        "interval_start_seconds",
-                        "interval_end_seconds",
-                        "seconds_ahead_start",
-                        "seconds_ahead_end",
-                        "onset_probability",
-                        "timing_probability_given_event",
-                        "cumulative_onset_probability",
-                        "survival_probability",
-                    ]
-                ),
-                "recomputation_count": self.recomputation_count,
-                "recomputed": False,
-                "episode_complete": True,
-            }
-            return self.last_result
-
         step = int(math.floor(elapsed / self.config.bin_seconds))
+        if step > self.max_step:
+            raise ValueError(
+                f"Requested step {step} exceeds the precomputed replay. "
+                "Construct the engine with a longer replay_duration_seconds."
+            )
         if step <= self.last_step and self.last_result is not None:
-            return {**self.last_result, "recomputed": False}
+            return {
+                **self.last_result,
+                "updated": False,
+                "recomputed": False,
+            }
 
-        landmark_seconds = self.episode_anchor_seconds + step * self.config.bin_seconds
-        features = extract_context_features_from_edf(
-            self.edf_path, landmark_seconds, self.config
-        )
-        hazards, pmf, no_event_5m = predict_horizon_distribution(
-            self.model, features
-        )
-        table, no_event_fixed = fixed_episode_forecast_table(
-            pmf[0], step, self.config
+        landmark_seconds = (
+            self.episode_anchor_seconds + step * self.config.bin_seconds
         )
         self.last_step = step
-        self.recomputation_count += 1
+        self.update_count += 1
         self.last_result = {
             "episode_step": step,
             "landmark_seconds": landmark_seconds,
-            "fixed_end_seconds": self.fixed_end_seconds,
-            "remaining_bins": N_BINS - step,
-            "event_risk_by_fixed_end": 1.0 - no_event_fixed,
-            "no_event_probability_by_fixed_end": no_event_fixed,
-            "no_event_probability_next_5m": float(no_event_5m[0]),
-            "hazards_next_5m": hazards[0],
-            "pmf_next_5m": pmf[0],
-            "probability_table": table,
-            "recomputation_count": self.recomputation_count,
+            "horizon_start_seconds": landmark_seconds,
+            "horizon_end_seconds": landmark_seconds + self.config.horizon_seconds,
+            "forecast_bins": N_BINS,
+            "expired_absolute_bin": step if step > 0 else None,
+            "appended_absolute_bin": step + N_BINS,
+            "event_risk_next_5m": float(
+                1.0 - self.precomputed_no_event[step]
+            ),
+            "no_event_probability_next_5m": float(
+                self.precomputed_no_event[step]
+            ),
+            "hazards_next_5m": self.precomputed_hazards[step],
+            "pmf_next_5m": self.precomputed_pmf[step],
+            "probability_table": self.precomputed_tables[step],
+            "update_count": self.update_count,
+            "batch_precomputation_count": 1,
+            "online_edf_reads": 0,
+            "online_model_calls": 0,
+            "updated": True,
             "recomputed": True,
-            "episode_complete": False,
         }
         return self.last_result
 

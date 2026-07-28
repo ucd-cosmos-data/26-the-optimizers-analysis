@@ -1,4 +1,4 @@
-episode_id,patient_id,source_event_id,episode_type,recording,edf_path,anchor_seconds,fixed_end_seconds,event_onset_seconds
+episode_id,patient_id,source_event_id,episode_type,recording,edf_path,anchor_seconds,training_episode_end_seconds,event_onset_seconds
 PN00_interictal_01,PN00,,interictal,PN00-1.edf,C:\Users\shrey\OneDrive\Desktop\Cosmos\26-the-optimizers-analysis\final_project\data\raw\PN00\PN00-1.edf,120.0,420.0,
 PN00_interictal_02,PN00,,interictal,PN00-1.edf,C:\Users\shrey\OneDrive\Desktop\Cosmos\26-the-optimizers-analysis\final_project\data\raw\PN00\PN00-1.edf,1860.0,2160.0,
 PN00_interictal_03,PN00,,interictal,PN00-3.edf,C:\Users\shrey\OneDrive\Desktop\Cosmos\26-the-optimizers-analysis\final_project\data\raw\PN00\PN00-3.edf,1260.0,1560.0,
