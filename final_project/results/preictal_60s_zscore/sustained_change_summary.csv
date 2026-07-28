@@ -1,6 +1,0 @@
-band,valid_seizure_count,seizures_with_sustained_change_n,seizures_with_sustained_change_percent,median_first_sustained_midpoint_seconds,valid_patient_count,patients_with_any_sustained_change_n,patients_with_any_sustained_change_percent,max_abs_patient_equal_median_z,max_abs_change_midpoint_seconds
-alpha,47,3,6.382978723404255,-15.0,14,3,21.428571428571427,0.2653098056670477,-39.0
-beta,36,3,8.333333333333334,-57.0,12,3,25.0,0.389671333007645,-3.0
-theta,43,2,4.651162790697675,-57.0,13,2,15.384615384615385,0.29976741804200746,-27.0
-delta,9,1,11.11111111111111,-9.0,6,1,16.666666666666664,0.6648218874356928,-45.0
-gamma,7,0,0.0,,1,0,0.0,0.3007027522713088,-15.0
