@@ -1,12 +1,12 @@
 file,size_kb,purpose
 ARTIFACT_INVENTORY.csv,0.8,Generated notebook artifact
 development_warning_curve.csv,12.2,Sensitivity/TiW threshold trade-off
-episode_manifest.csv,16.1,Exact EDF episodes and anchors used
-fixed_horizon_rolling_example.csv,16.7,Readable probability tables behind the rolling plot
-fixed_horizon_rolling_example.png,94.6,Three boundary-triggered probability graphs
+episode_manifest.csv,16.2,Exact EDF episodes and anchors used
 forecast_evaluation.png,87.6,Calibration and warning trade-off plot
 holdout_landmark_probabilities.csv,2612.8,Every holdout landmark and all 60 bin probabilities
 holdout_metrics.csv,1.2,Overall holdout scores
 holdout_patient_metrics.csv,0.4,Per-patient holdout scores
+moving_horizon_rolling_example.csv,24.2,Readable moving-horizon probability tables
+moving_horizon_rolling_example.png,106.0,Four rolling 60-bin probability graphs
 rolling_discrete_hazard_model.joblib,333.9,Fitted model bundle and configuration
 study_summary.csv,0.2,Readable study/data inventory
