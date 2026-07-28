@@ -46,6 +46,44 @@ Gamma remains sensitive to muscle and movement artifacts even after these
 steps. Gamma findings must be checked against the quality audit and treated
 cautiously.
 
+## Random sampled-point analysis
+
+The sampled-point analysis is complementary to the six-bin Welch analysis
+above. It estimates time-resolved power rather than treating raw instantaneous
+EEG amplitude as frequency power:
+
+1. Read the complete 60-second preictal or interictal block.
+2. Apply the same detrending, common-median reference, channel-quality rules,
+   and 60 Hz notch filter used by the primary analysis.
+3. Apply separate fourth-order zero-phase Butterworth filters for delta
+   (0.5–4 Hz), theta (4–8 Hz), alpha (8–13 Hz), beta (13–30 Hz), and gamma
+   (30–100 Hz).
+4. Square each filter's analytic-signal amplitude and smooth it over one
+   second to estimate a continuous power envelope.
+5. Divide each band's envelope by the sum across all five bands within each
+   usable channel, then take the median across channels.
+6. Split the preictal minute into ten non-overlapping 6-second bins and,
+   using seed 42, select 10 distinct EEG sample indices from every bin.
+
+This produces exactly 100 sampled times per seizure and 4,700 points per band.
+The x value is
+`log2(preictal relative power / patient interictal mean relative power)`.
+Patient-specific interictal means and central 95% reference ranges are
+estimated from equivalently stratified samples in all validated matched
+control blocks for that patient. Color indicates whether a preictal point lies
+inside or outside that patient's range.
+
+For each band, the displayed ordinary least-squares line fits log2 deviation
+as a function of seconds relative to onset. The listed `r` is the point-level
+Pearson correlation. Because repeated samples from a seizure and repeated
+seizures from a patient are not independent, these regressions and p-values
+are descriptive and must not be interpreted as independent-observation
+inference.
+
+As a frequency-mapping sanity check, synthetic 2, 6, 10, 20, and 50 Hz waves
+must be assigned to delta, theta, alpha, beta, and gamma, respectively. The
+validation results are recorded in `band_filter_validation.csv`.
+
 ## Magnitude and temporal ordering
 
 Each preictal value is normalized to that seizure's matched interictal controls:

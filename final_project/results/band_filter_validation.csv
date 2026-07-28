@@ -1,0 +1,6 @@
+test_frequency_hz,expected_band,represented_band,expected_band_power_fraction,passed
+2.0,delta,delta,0.9999772524600312,True
+6.0,theta,theta,0.9956922827929158,True
+10.0,alpha,alpha,0.9993056513850489,True
+20.0,beta,beta,0.9994623526235679,True
+50.0,gamma,gamma,0.9975982713835463,True
