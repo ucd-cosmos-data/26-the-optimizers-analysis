@@ -39,9 +39,10 @@ final_project/
 ├── download_eeg_data.sh              # Downloads and verifies PhysioNet files
 ├── data/
 │   ├── raw/                          # Original EDF recordings; never edited
-│   └── processed/                    # Generated window-level feature table
+│   └── processed/                    # Generated feature and sampled-point tables
 ├── scripts/
 │   ├── analyze_preictal_bandpower.py # Raw EEG → features → summaries
+│   ├── sample_preictal_bandpower.py  # 100 sampled points/seizure → regressions
 │   └── make_figures.py               # Summaries → four research figures
 └── results/
     ├── raw_data_audit/               # Existing completeness/quality audit
@@ -50,6 +51,9 @@ final_project/
     ├── temporal_summary.csv          # Magnitude by band and pre-onset bin
     ├── consistency_summary.csv       # Variability and direction agreement
     ├── consistency_comparisons.csv   # Beta/gamma vs lower-band comparisons
+    ├── patient_interictal_bandpower_ranges.csv
+    ├── sampled_bandpower_regression.csv
+    ├── band_filter_validation.csv
     ├── analysis_settings.json        # Reproducibility settings
     └── figures/                      # Report-ready plots
 ```
@@ -69,6 +73,20 @@ python final_project/scripts/make_figures.py
 
 The first script performs the scientific analysis. The second only turns its
 summary tables into figures, so it must run second.
+
+The separate sampled-point analysis uses the validated event and control
+inventories, takes 100 stratified time points per seizure (10 from each of ten
+6-second bins), and creates one regression plot per frequency band:
+
+```powershell
+python final_project/scripts/sample_preictal_bandpower.py
+```
+
+Its long-format point table is
+`data/processed/preictal_sampled_bandpower.csv`. Each band contains 4,700
+preictal points across the 47 seizures. Points are colored by whether their
+relative power falls inside that patient's empirical central 95% interictal
+range.
 
 The default operational definition of an interictal control is a 60-second
 block from the same patient, at least 15 minutes from every annotated seizure.
