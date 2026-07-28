@@ -1,0 +1,11 @@
+quantity,value
+patients,14.0
+EDF recordings,41.0
+annotated seizures,47.0
+eligible seizures,47.0
+preictal episodes,47.0
+matched interictal episodes,47.0
+bin width (s),5.0
+horizon (s),300.0
+past EEG context (s),120.0
+total EDF size (GB),21.8

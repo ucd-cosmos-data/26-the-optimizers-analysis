@@ -1,0 +1,5 @@
+patient_id,landmarks,seizure_episodes,interictal_episodes,auroc,sensitivity,time_in_warning,false_alarms_per_hour,captured_seizures,total_seizures,median_warning_lead_seconds
+PN00,600,5,5,0.6363888888888889,0.2,0.015,7.199999999999999,1.0,5.0,270.0
+PN12,480,4,4,0.6615451388888889,0.75,0.2125,24.0,3.0,4.0,265.0
+PN14,480,4,4,0.4765277777777778,0.25,0.0375,0.0,1.0,4.0,240.0
+PN16,240,2,2,0.18625,0.0,0.020833333333333332,12.0,0.0,2.0,
