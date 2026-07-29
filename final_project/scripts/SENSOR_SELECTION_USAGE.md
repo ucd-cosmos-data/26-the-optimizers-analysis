@@ -15,6 +15,30 @@ Accuracy versus sensor count should normally be interpreted as a rising curve
 that plateaus, not as a symmetric bell curve. Extra noisy features can sometimes
 reduce held-out accuracy, but the algorithm does not assume that they will.
 
+## How the model works
+
+The model starts with the 29 EEG channels shared by all 14 subjects. At each
+five-second landmark, every channel is represented independently by 24 compact
+spectral and signal-summary features from the preceding two minutes. The target
+is whether a seizure occurs within the next five minutes.
+
+The current cohort contains four interictal control episodes per seizure:
+47 preictal episodes and 188 controls, producing 14,100 landmark rows. A
+class-balanced logistic-regression model is fitted separately for each sensor.
+Candidate K-sensor models average the individual sensor probabilities; no
+neural network is used.
+
+All combination search happens inside the training subjects. Performance is
+then measured on a completely held-out subject using average precision, with
+each subject contributing equal weight. The algorithm returns only the smallest
+count on the statistically non-inferior plateau and discards the temporary
+sensor identities.
+
+The control ratio and non-inferiority margin are part of the model definition
+and must be fixed before analysis. Average precision depends on class
+prevalence, so changing from one to four controls per seizure changes the
+performance curve and can change K even when the EEG signals are unchanged.
+
 ## Algorithm
 
 For each outer subject-grouped fold:

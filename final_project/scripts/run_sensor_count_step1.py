@@ -35,6 +35,7 @@ def save_plateau_artifacts(
         writer = csv.DictWriter(
             handle,
             fieldnames=list(curve[0].__dataclass_fields__),
+            lineterminator="\n",
         )
         writer.writeheader()
         writer.writerows(

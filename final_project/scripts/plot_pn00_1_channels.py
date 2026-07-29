@@ -1,4 +1,4 @@
-"""Create a readable full-recording overview of all 31 exported PN00-1 channels.
+"""Create a readable full-recording overview of the split PN00-1 EEG channels.
 
 The recording is 43.75 minutes long at 512 Hz, so plotting every point would
 hide short peaks beneath overplotting.  Each panel instead shows a consecutive
@@ -24,8 +24,8 @@ import pandas as pd
 
 
 ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_CHANNEL_DIR = ROOT / "data" / "processed" / "PN00-1_split_channels"
-DEFAULT_OUTPUT = ROOT / "results" / "PN00-1_all_31_channel_overview.png"
+DEFAULT_CHANNEL_DIR = ROOT / "data" / "raw" / "splitdata" / "PN00" / "PN00-1"
+DEFAULT_OUTPUT = DEFAULT_CHANNEL_DIR / "channel_overview.png"
 
 
 def minmax_envelope(values: np.ndarray, sample_rate: float, max_points: int) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -46,8 +46,11 @@ def minmax_envelope(values: np.ndarray, sample_rate: float, max_points: int) -> 
 def plot_channels(channel_dir: Path, output: Path, max_points: int) -> None:
     manifest_path = channel_dir / "channel_manifest.csv"
     manifest = pd.read_csv(manifest_path)
-    if len(manifest) != 31:
-        raise ValueError(f"Expected 31 channels in {manifest_path}, found {len(manifest)}")
+    if len(manifest) not in (29, 31):
+        raise ValueError(
+            f"Expected 29 or 31 EEG channels in {manifest_path}, "
+            f"found {len(manifest)}."
+        )
 
     fig, axes = plt.subplots(8, 4, figsize=(19, 22), sharex=True)
     axes = axes.ravel()
@@ -57,8 +60,13 @@ def plot_channels(channel_dir: Path, output: Path, max_points: int) -> None:
         minutes, lower, upper = minmax_envelope(physical, row.sample_rate_hz, max_points)
         axis.fill_between(minutes, lower, upper, color="#2a6fbb", alpha=0.55, linewidth=0)
         axis.plot(minutes, (lower + upper) / 2, color="#123a63", linewidth=0.35)
-        signal_type = "EEG" if row.is_eeg else "Auxiliary"
-        axis.set_title(f"{int(row.export_channel):02d}. {row.channel_label} ({signal_type})", fontsize=9, loc="left", pad=3)
+        channel_number = getattr(
+            row, "channel_number", getattr(row, "export_channel", 0)
+        )
+        signal_type = (
+            "EEG" if not hasattr(row, "is_eeg") or row.is_eeg else "Auxiliary"
+        )
+        axis.set_title(f"{int(channel_number):02d}. {row.channel_label} ({signal_type})", fontsize=9, loc="left", pad=3)
         axis.set_ylabel(row.physical_unit, fontsize=7)
         axis.tick_params(axis="both", labelsize=7, length=2)
         axis.grid(axis="x", color="0.90", linewidth=0.5)
@@ -68,7 +76,8 @@ def plot_channels(channel_dir: Path, output: Path, max_points: int) -> None:
         if axis.get_visible():
             axis.set_xlabel("Minutes from recording start", fontsize=8)
     fig.suptitle(
-        "PN00-1: full-recording overview of 31 exported channels\n"
+        f"{channel_dir.name}: full-recording overview of "
+        f"{len(manifest)} available EEG channels\n"
         "Each panel is a consecutive min/max envelope; no random samples were selected.",
         fontsize=15,
         y=0.995,
