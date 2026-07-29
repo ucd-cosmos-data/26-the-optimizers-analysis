@@ -1,0 +1,57 @@
+feature,readable_feature,importance_nll_increase,importance_std,baseline_validation_nll,repeats
+log_power_low_gamma_std,low-gamma log power — context variability,0.22214254740946848,0.011641846594754979,2.964494920643732,2
+log_rms_mean,log RMS amplitude — context mean,0.17389983932198838,0.026292340087093358,2.964494920643732,2
+relative_low_gamma_mean,low-gamma relative power — context mean,0.1606873298714544,0.02772497855186673,2.964494920643732,2
+log_power_alpha_mean,alpha log power — context mean,0.07778257796169141,0.018974508933048195,2.964494920643732,2
+log_line_length_mean,log line length — context mean,0.07249055348197064,0.022513774089155003,2.964494920643732,2
+log_rms_std,log RMS amplitude — context variability,0.06728934757097482,0.009243827659701775,2.964494920643732,2
+relative_alpha_std,alpha relative power — context variability,0.06645105340919244,0.011759822054351776,2.964494920643732,2
+log_power_theta_mean,theta log power — context mean,0.0646570940735478,0.0038268088059452143,2.964494920643732,2
+usable_channel_fraction_std,usable-channel fraction — context variability,0.06195169639686848,0.0038738758783083416,2.964494920643732,2
+log_power_delta_mean,delta log power — context mean,0.05994215608090836,0.023637429749647554,2.964494920643732,2
+usable_channel_fraction_mean,usable-channel fraction — context mean,0.05185037975155948,0.027255935373276863,2.964494920643732,2
+spectral_entropy_mean,spectral entropy — context mean,0.04761978371327924,0.0013304141265457758,2.964494920643732,2
+relative_delta_mean,delta relative power — context mean,0.046196459228682984,0.007462212663126744,2.964494920643732,2
+usable_channel_fraction_slope,usable-channel fraction — two-minute trend,0.038839131163945106,0.014308488361892246,2.964494920643732,2
+relative_beta_mean,beta relative power — context mean,0.03538638574137365,0.0022130138307068226,2.964494920643732,2
+relative_low_gamma_slope,low-gamma relative power — two-minute trend,0.023650478801519048,0.0007702548417325428,2.964494920643732,2
+relative_theta_slope,theta relative power — two-minute trend,0.017632919957102144,0.0014773436326891431,2.964494920643732,2
+log_power_alpha_slope,alpha log power — two-minute trend,0.017170326890491916,0.00211512388811097,2.964494920643732,2
+log_line_length_std,log line length — context variability,0.01711576697452588,0.002125861642793714,2.964494920643732,2
+log_power_beta_std,beta log power — context variability,0.014631393185649655,0.00041996149462053545,2.964494920643732,2
+log_power_theta_std,theta log power — context variability,0.01072820266247465,0.003364972775238506,2.964494920643732,2
+spectral_entropy_std,spectral entropy — context variability,0.006045826883309013,0.0028591109812199367,2.964494920643732,2
+spectral_entropy_slope,spectral entropy — two-minute trend,0.005237148367068789,0.001335146689040334,2.964494920643732,2
+log_power_alpha_std,alpha log power — context variability,0.004722520118215723,0.003881785715031949,2.964494920643732,2
+relative_delta_slope,delta relative power — two-minute trend,0.003743887562539072,0.0010742489891732987,2.964494920643732,2
+log_rms_slope,log RMS amplitude — two-minute trend,0.00227011667722099,0.0015013572915725248,2.964494920643732,2
+log_power_low_gamma_slope,low-gamma log power — two-minute trend,0.0014817774207305234,0.0001555179997390077,2.964494920643732,2
+log_power_low_gamma_last,low-gamma log power — most recent interval,0.001144831364399801,0.000306226460776271,2.964494920643732,2
+log_power_theta_last,theta log power — most recent interval,0.0006809959679845434,0.00022610523189037224,2.964494920643732,2
+relative_alpha_slope,alpha relative power — two-minute trend,0.0006782922455517149,0.0007762064489005294,2.964494920643732,2
+log_power_delta_last,delta log power — most recent interval,2.058235300617106e-05,6.56885517369421e-05,2.964494920643732,2
+log_power_alpha_last,alpha log power — most recent interval,0.0,0.0,2.964494920643732,2
+relative_alpha_last,alpha relative power — most recent interval,0.0,0.0,2.964494920643732,2
+relative_low_gamma_last,low-gamma relative power — most recent interval,0.0,0.0,2.964494920643732,2
+relative_beta_last,beta relative power — most recent interval,0.0,0.0,2.964494920643732,2
+relative_theta_last,theta relative power — most recent interval,0.0,0.0,2.964494920643732,2
+usable_channel_fraction_last,usable-channel fraction — most recent interval,0.0,0.0,2.964494920643732,2
+spectral_entropy_last,spectral entropy — most recent interval,0.0,0.0,2.964494920643732,2
+log_power_beta_last,beta log power — most recent interval,-5.3296293513804827e-05,2.4839376979501893e-05,2.964494920643732,2
+relative_delta_last,delta relative power — most recent interval,-9.818803773953277e-05,9.818803773953277e-05,2.964494920643732,2
+log_power_beta_slope,beta log power — two-minute trend,-0.00012963292002732274,0.0006277701508872191,2.964494920643732,2
+log_rms_last,log RMS amplitude — most recent interval,-0.0006084324037110012,0.00017483613231061845,2.964494920643732,2
+log_power_delta_slope,delta log power — two-minute trend,-0.001057990645226159,0.0019691243915969103,2.964494920643732,2
+relative_low_gamma_std,low-gamma relative power — context variability,-0.004663433850814691,0.0002982955461838799,2.964494920643732,2
+log_power_low_gamma_mean,low-gamma log power — context mean,-0.0059283656167430365,0.0008577853304059246,2.964494920643732,2
+log_line_length_last,log line length — most recent interval,-0.006966818745167469,0.0006781415381786893,2.964494920643732,2
+relative_alpha_mean,alpha relative power — context mean,-0.007584996921108145,0.009515304559405413,2.964494920643732,2
+relative_beta_slope,beta relative power — two-minute trend,-0.00918740646953542,0.005444473467239197,2.964494920643732,2
+log_power_theta_slope,theta log power — two-minute trend,-0.011371976689252827,0.00026421968127787743,2.964494920643732,2
+relative_beta_std,beta relative power — context variability,-0.012897146994266473,0.007270404469099434,2.964494920643732,2
+log_line_length_slope,log line length — two-minute trend,-0.018844673998932082,6.936422810599474e-05,2.964494920643732,2
+log_power_delta_std,delta log power — context variability,-0.019750933087233635,0.001876367638360188,2.964494920643732,2
+relative_theta_mean,theta relative power — context mean,-0.03357083521761539,0.005190753510598833,2.964494920643732,2
+log_power_beta_mean,beta log power — context mean,-0.04620969694149668,0.002858202310647595,2.964494920643732,2
+relative_delta_std,delta relative power — context variability,-0.0667448496221319,0.004110844813762116,2.964494920643732,2
+relative_theta_std,theta relative power — context variability,-0.22697488485068162,0.01896109774229493,2.964494920643732,2

@@ -1,0 +1,13 @@
+metric,value,interpretation
+negative log likelihood,2.964494920643732,Lower is better; proper score for the observed bin/no-event class.
+multicategory Brier score,0.7576166025194958,Lower is better; probability error across 60 bins plus no-event.
+multicategory Brier skill score,-0.01579879667418438,Above 0 improves on the development-set class-frequency forecast.
+integrated survival Brier score,0.16091022643365094,Lower is better; mean survival-probability error across 5-minute horizon.
+5-minute AUROC,0.7091319444444445,Discrimination only; does not assess calibration.
+5-minute average precision,0.6861871741843393,Ranking metric sensitive to event prevalence.
+conditional timing MAE (seconds),73.90142968768636,Error of expected onset time among seizure landmarks.
+seizure sensitivity,0.25,Fraction of seizure episodes with at least one warning.
+time in warning,0.03958333333333333,Fraction of evaluated 5-second landmarks under warning.
+false alarms per hour,6.0,Rising warning edges in interictal episodes per monitored hour.
+median warning lead (seconds),300.0,First-warning lead among captured holdout seizures.
+development-selected warning threshold,0.9926098271412666,Chosen without holdout outcomes under the configured TiW target.

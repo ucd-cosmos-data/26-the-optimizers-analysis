@@ -1,11 +1,11 @@
 """Discrete-time seizure forecasting from EDF scalp EEG recordings.
 
 This module supports the companion ``rolling_seizure_forecasting.ipynb``.
-It implements a rolling five-minute forecast that updates only at five-second
-landmarks.  When one interval expires, one interval is appended at the far
-end, so every forecast still covers 60 future bins.  A discrete hazard model
-produces an internally consistent distribution over those bins plus a separate
-``no seizure in the next five minutes`` outcome.
+It implements a configurable rolling forecast that updates at fixed landmarks.
+The model keeps a fixed two-minute causal EEG context and predicts ``r`` minutes
+into the future using bins of length ``i``. A discrete hazard model produces an
+internally consistent distribution over the future bins plus a separate
+``no seizure in the configured horizon`` outcome.
 
 The implementation is an exploratory research model, not a medical device.
 """
@@ -30,11 +30,12 @@ from sklearn.metrics import average_precision_score, roc_auc_score
 from sklearn.model_selection import GroupShuffleSplit
 
 
-MODULE_VERSION = "2.0.0"
-FEATURE_CACHE_VERSION = "1.0.0"
+MODULE_VERSION = "3.1.0"
+FEATURE_CACHE_VERSION = "2.0.0"
 BIN_SECONDS = 5
 HORIZON_SECONDS = 300
 CONTEXT_SECONDS = 120
+PRE_ONSET_SECONDS = 300
 N_BINS = HORIZON_SECONDS // BIN_SECONDS
 MICRO_WINDOWS_PER_CONTEXT = CONTEXT_SECONDS // BIN_SECONDS
 INTERICTAL_BUFFER_SECONDS = 300
@@ -70,6 +71,35 @@ MODEL_FEATURE_COLUMNS = [
 HAZARD_TIME_COLUMNS = ("lead_bin", "lead_fraction", "log1p_lead_seconds")
 HAZARD_FEATURE_COLUMNS = MODEL_FEATURE_COLUMNS + list(HAZARD_TIME_COLUMNS)
 
+REQUESTED_SEIZURE_SPLITS: dict[str, dict[str, int]] = {
+    "train": {
+        "PN00": 4,
+        "PN01": 2,
+        "PN03": 2,
+        "PN05": 2,
+        "PN06": 4,
+        "PN07": 1,
+        "PN09": 2,
+        "PN10": 8,
+        "PN11": 1,
+        "PN12": 3,
+        "PN13": 2,
+        "PN14": 3,
+        "PN16": 1,
+    },
+    "validation": {"PN10": 1, "PN14": 1, "PN16": 1, "PN17": 1},
+    "test": {
+        "PN00": 1,
+        "PN05": 1,
+        "PN06": 1,
+        "PN09": 1,
+        "PN10": 1,
+        "PN12": 1,
+        "PN13": 1,
+        "PN17": 1,
+    },
+}
+
 
 @dataclass(frozen=True)
 class ForecastConfig:
@@ -78,6 +108,7 @@ class ForecastConfig:
     bin_seconds: int = BIN_SECONDS
     horizon_seconds: int = HORIZON_SECONDS
     context_seconds: int = CONTEXT_SECONDS
+    pre_onset_seconds: int = PRE_ONSET_SECONDS
     interictal_buffer_seconds: int = INTERICTAL_BUFFER_SECONDS
     target_sample_rate: int = TARGET_SAMPLE_RATE
     min_eeg_channels: int = MIN_EEG_CHANNELS
@@ -90,6 +121,26 @@ class ForecastConfig:
     min_samples_leaf: int = 80
     l2_regularization: float = 1.0
 
+    @property
+    def n_bins(self) -> int:
+        return self.horizon_seconds // self.bin_seconds
+
+    @property
+    def context_bins(self) -> int:
+        return self.context_seconds // self.bin_seconds
+
+    @property
+    def pre_onset_steps(self) -> int:
+        """Number of trainable readings from -m through -i seconds."""
+
+        return self.pre_onset_seconds // self.bin_seconds
+
+    @property
+    def reading_count(self) -> int:
+        """Number of requested displays from -m through onset, inclusive."""
+
+        return self.pre_onset_steps + 1
+
     def validate(self) -> None:
         if self.bin_seconds <= 0:
             raise ValueError("bin_seconds must be positive.")
@@ -97,6 +148,14 @@ class ForecastConfig:
             raise ValueError("horizon_seconds must be divisible by bin_seconds.")
         if self.context_seconds % self.bin_seconds:
             raise ValueError("context_seconds must be divisible by bin_seconds.")
+        if self.pre_onset_seconds <= 0:
+            raise ValueError("pre_onset_seconds must be positive.")
+        if self.pre_onset_seconds % self.bin_seconds:
+            raise ValueError("pre_onset_seconds must be divisible by bin_seconds.")
+        if self.context_seconds != 120:
+            raise ValueError(
+                "This experiment requires exactly 120 seconds of past EEG context."
+            )
         if not 0 < self.test_fraction < 1:
             raise ValueError("test_fraction must be in (0, 1).")
         if not 0 <= self.warning_time_target <= 1:
@@ -381,22 +440,25 @@ def segment_micro_features(
     return result
 
 
-def aggregate_context(micro_features: np.ndarray) -> np.ndarray:
-    """Aggregate 24 consecutive five-second rows into one context vector."""
+def aggregate_context(
+    micro_features: np.ndarray, bin_seconds: int = BIN_SECONDS
+) -> np.ndarray:
+    """Aggregate a complete two-minute context into one feature vector."""
 
-    if micro_features.shape != (
-        MICRO_WINDOWS_PER_CONTEXT,
-        len(MICRO_FEATURE_NAMES),
+    if micro_features.ndim != 2 or micro_features.shape[1] != len(
+        MICRO_FEATURE_NAMES
     ):
         raise ValueError(
-            "Expected context micro-features with shape "
-            f"({MICRO_WINDOWS_PER_CONTEXT}, {len(MICRO_FEATURE_NAMES)}), "
-            f"received {micro_features.shape}."
+            "Context micro-features have an unexpected shape: "
+            f"{micro_features.shape}."
         )
+    context_bins = micro_features.shape[0]
+    if context_bins < 2:
+        raise ValueError("At least two micro-windows are required for a context.")
     means = np.mean(micro_features, axis=0)
     stds = np.std(micro_features, axis=0)
     last = micro_features[-1]
-    times = np.arange(MICRO_WINDOWS_PER_CONTEXT, dtype=float) * BIN_SECONDS
+    times = np.arange(context_bins, dtype=float) * bin_seconds
     centered_time = times - times.mean()
     slopes = (
         centered_time[:, None] * (micro_features - means[None, :])
@@ -458,7 +520,7 @@ def build_episode_manifest(
     for row in eligible.itertuples():
         path = Path(row.edf_path)
         duration = metadata(path)["duration_seconds"]
-        anchor = float(row.onset_seconds) - config.horizon_seconds
+        anchor = float(row.onset_seconds) - config.pre_onset_seconds
         if anchor < config.context_seconds or row.onset_seconds > duration:
             continue
         positive_rows.append(
@@ -471,7 +533,7 @@ def build_episode_manifest(
                 "edf_path": str(path),
                 "anchor_seconds": anchor,
                 "training_episode_end_seconds": (
-                    anchor + config.horizon_seconds
+                    anchor + config.pre_onset_seconds
                 ),
                 "event_onset_seconds": float(row.onset_seconds),
             }
@@ -499,15 +561,23 @@ def build_episode_manifest(
             duration = metadata(path)["duration_seconds"]
             intervals = interval_lookup.get((patient_id, recording), [])
             latest_anchor = int(
-                math.floor(duration - 2 * config.horizon_seconds)
+                math.floor(
+                    duration
+                    - config.pre_onset_seconds
+                    - config.horizon_seconds
+                )
             )
             for anchor in range(
                 config.context_seconds, latest_anchor + 1, 60
             ):
                 # Context covers 120 s before the anchor. Labels for the final
-                # landmark require another full 300 s of follow-up.
+                # trainable landmark require a full forecast horizon afterward.
                 segment_start = anchor - config.context_seconds
-                label_followup_end = anchor + 2 * config.horizon_seconds
+                label_followup_end = (
+                    anchor
+                    + config.pre_onset_seconds
+                    + config.horizon_seconds
+                )
                 if _safe_from_seizures(
                     segment_start,
                     label_followup_end,
@@ -555,7 +625,7 @@ def build_episode_manifest(
                     "edf_path": row.edf_path,
                     "anchor_seconds": float(row.anchor_seconds),
                     "training_episode_end_seconds": float(
-                        row.anchor_seconds + config.horizon_seconds
+                        row.anchor_seconds + config.pre_onset_seconds
                     ),
                     "event_onset_seconds": np.nan,
                 }
@@ -570,14 +640,110 @@ def build_episode_manifest(
     return manifest.reset_index(drop=True)
 
 
+def assign_requested_splits(
+    manifest: pd.DataFrame,
+    split_quotas: dict[str, dict[str, int]] = REQUESTED_SEIZURE_SPLITS,
+    random_seed: int = RANDOM_SEED,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Randomly assign disjoint seizures and matched controls to exact splits.
+
+    The requested design deliberately allows the same patient to occur in
+    multiple splits. Individual seizure episodes and interictal episodes remain
+    disjoint. A fixed seed makes the random assignment exactly reproducible.
+    """
+
+    required = {"patient_id", "episode_id", "episode_type", "source_event_id"}
+    missing = sorted(required - set(manifest.columns))
+    if missing:
+        raise ValueError(f"Manifest is missing split columns: {missing}")
+    if set(split_quotas) != {"train", "validation", "test"}:
+        raise ValueError("Split quotas must define train, validation, and test.")
+
+    result = manifest.copy()
+    result["dataset_split"] = ""
+    result["split_selection_rank"] = -1
+    rng = np.random.default_rng(random_seed)
+    allocation_rows: list[dict[str, Any]] = []
+
+    patients = sorted(
+        set().union(*(patient_counts.keys() for patient_counts in split_quotas.values()))
+    )
+    for patient_id in patients:
+        patient_positive = result.index[
+            result["patient_id"].eq(patient_id)
+            & result["episode_type"].eq("preictal")
+        ].to_numpy()
+        patient_negative = result.index[
+            result["patient_id"].eq(patient_id)
+            & result["episode_type"].eq("interictal")
+        ].to_numpy()
+        required_count = sum(
+            split_quotas[split_name].get(patient_id, 0)
+            for split_name in ("train", "validation", "test")
+        )
+        if len(patient_positive) != required_count:
+            raise ValueError(
+                f"{patient_id} has {len(patient_positive)} eligible seizures, "
+                f"but the requested quotas require {required_count}."
+            )
+        if len(patient_negative) < required_count:
+            raise ValueError(
+                f"{patient_id} has {len(patient_negative)} controls for "
+                f"{required_count} requested seizures."
+            )
+
+        positive_order = rng.permutation(patient_positive)
+        negative_order = rng.permutation(patient_negative)[:required_count]
+        cursor = 0
+        for split_name in ("train", "validation", "test"):
+            count = split_quotas[split_name].get(patient_id, 0)
+            selected_positive = positive_order[cursor : cursor + count]
+            selected_negative = negative_order[cursor : cursor + count]
+            for rank, row_index in enumerate(selected_positive, start=1):
+                result.loc[row_index, ["dataset_split", "split_selection_rank"]] = [
+                    split_name,
+                    rank,
+                ]
+                allocation_rows.append(
+                    {
+                        "dataset_split": split_name,
+                        "patient_id": patient_id,
+                        "selection_rank": rank,
+                        "source_event_id": result.at[row_index, "source_event_id"],
+                        "episode_id": result.at[row_index, "episode_id"],
+                        "recording": result.at[row_index, "recording"],
+                    }
+                )
+            for rank, row_index in enumerate(selected_negative, start=1):
+                result.loc[row_index, ["dataset_split", "split_selection_rank"]] = [
+                    split_name,
+                    rank,
+                ]
+            cursor += count
+
+    unused = result.loc[result["dataset_split"].eq("")]
+    if not unused.empty:
+        raise ValueError(
+            "Every episode must be assigned exactly once; unassigned episodes: "
+            + ", ".join(unused["episode_id"].astype(str).head(10))
+        )
+    allocation = pd.DataFrame(allocation_rows).sort_values(
+        ["dataset_split", "patient_id", "selection_rank"]
+    )
+    duplicated_events = allocation["source_event_id"].duplicated().any()
+    if duplicated_events:
+        raise AssertionError("A seizure was assigned to more than one split.")
+    return result.reset_index(drop=True), allocation.reset_index(drop=True)
+
+
 def _episode_landmarks(
     episode: pd.Series,
     config: ForecastConfig,
 ) -> pd.DataFrame:
-    """Extract all 60 landmark contexts from one episode."""
+    """Extract trainable readings from ``m`` minutes before onset to ``-i``."""
 
     read_start = float(episode["anchor_seconds"]) - config.context_seconds
-    read_duration = config.context_seconds + config.horizon_seconds
+    read_duration = config.context_seconds + config.pre_onset_seconds
     data, sample_rate, labels = read_edf_eeg_segment(
         episode["edf_path"],
         read_start,
@@ -586,7 +752,7 @@ def _episode_landmarks(
     )
     micro = segment_micro_features(data, sample_rate, config)
     expected_micro_rows = (
-        config.context_seconds + config.horizon_seconds
+        config.context_seconds + config.pre_onset_seconds
     ) // config.bin_seconds
     if len(micro) != expected_micro_rows:
         raise ValueError(
@@ -595,23 +761,30 @@ def _episode_landmarks(
 
     rows: list[dict[str, Any]] = []
     is_event = episode["episode_type"] == "preictal"
-    for step in range(N_BINS):
-        context = micro[step : step + MICRO_WINDOWS_PER_CONTEXT]
-        aggregated = aggregate_context(context)
+    for step in range(config.pre_onset_steps):
+        context = micro[step : step + config.context_bins]
+        aggregated = aggregate_context(context, config.bin_seconds)
         landmark = float(episode["anchor_seconds"]) + step * config.bin_seconds
         if is_event:
             time_to_event = float(episode["event_onset_seconds"]) - landmark
-            event_bin = int(math.ceil(time_to_event / config.bin_seconds) - 1)
-            if not 0 <= event_bin < N_BINS:
+            has_event = 0 < time_to_event <= config.horizon_seconds
+            event_bin = (
+                int(math.ceil(time_to_event / config.bin_seconds) - 1)
+                if has_event
+                else -1
+            )
+            if has_event and not 0 <= event_bin < config.n_bins:
                 raise AssertionError("Preictal landmark target is outside the horizon.")
         else:
             time_to_event = np.nan
             event_bin = -1
+            has_event = False
         row = {
             "episode_id": episode["episode_id"],
             "patient_id": episode["patient_id"],
             "source_event_id": episode["source_event_id"],
             "episode_type": episode["episode_type"],
+            "dataset_split": episode.get("dataset_split", ""),
             "recording": episode["recording"],
             "edf_path": episode["edf_path"],
             "anchor_seconds": float(episode["anchor_seconds"]),
@@ -622,7 +795,7 @@ def _episode_landmarks(
             "landmark_seconds": landmark,
             "time_to_event_seconds": time_to_event,
             "event_bin": event_bin,
-            "has_event_in_5m": int(is_event),
+            "has_event_in_horizon": int(has_event),
             "source_sample_rate": sample_rate,
             "eeg_channel_count": len(labels),
         }
@@ -639,6 +812,11 @@ def _cache_signature(
         "config": asdict(config),
         "episode_ids": manifest["episode_id"].tolist(),
         "recordings": sorted(manifest["recording"].unique().tolist()),
+        "dataset_splits": (
+            manifest["dataset_split"].tolist()
+            if "dataset_split" in manifest
+            else []
+        ),
     }
 
 
@@ -671,7 +849,7 @@ def build_landmark_dataset(
             if (
                 cached_signature == signature
                 and set(MODEL_FEATURE_COLUMNS).issubset(cached.columns)
-                and len(cached) == len(manifest) * N_BINS
+                and len(cached) == len(manifest) * config.pre_onset_steps
             ):
                 if verbose:
                     print(f"Loaded {len(cached):,} cached landmark rows.")
@@ -690,7 +868,7 @@ def build_landmark_dataset(
             )
         frames.append(_episode_landmarks(episode, config))
     landmarks = pd.concat(frames, ignore_index=True)
-    expected_rows = len(manifest) * N_BINS
+    expected_rows = len(manifest) * config.pre_onset_steps
     if len(landmarks) != expected_rows:
         raise AssertionError(f"Expected {expected_rows} rows, found {len(landmarks)}.")
     if not np.isfinite(landmarks[MODEL_FEATURE_COLUMNS].to_numpy()).all():
@@ -728,7 +906,12 @@ def split_by_patient(
     train = landmarks.loc[landmarks["patient_id"].isin(train_patients)].copy()
     test = landmarks.loc[landmarks["patient_id"].isin(test_patients)].copy()
     for name, frame in {"development": train, "holdout": test}.items():
-        if frame["has_event_in_5m"].nunique() != 2:
+        outcome_column = (
+            "has_event_in_horizon"
+            if "has_event_in_horizon" in frame
+            else "has_event_in_5m"
+        )
+        if frame[outcome_column].nunique() != 2:
             raise ValueError(f"{name} split does not contain both outcome classes.")
     return train, test, {
         "development_patients": train_patients,
@@ -736,13 +919,58 @@ def split_by_patient(
     }
 
 
-def make_person_period(landmarks: pd.DataFrame) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+def split_by_assignment(
+    landmarks: pd.DataFrame,
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, dict[str, Any]]:
+    """Return the exact event-disjoint train/validation/test assignment."""
+
+    if "dataset_split" not in landmarks:
+        raise ValueError("Landmarks do not contain dataset_split assignments.")
+    frames = {
+        name: landmarks.loc[landmarks["dataset_split"].eq(name)].copy()
+        for name in ("train", "validation", "test")
+    }
+    for name, frame in frames.items():
+        if frame.empty:
+            raise ValueError(f"The {name} split is empty.")
+        if frame["has_event_in_horizon"].nunique() != 2:
+            raise ValueError(
+                f"The {name} split lacks event/no-event horizon labels."
+            )
+    event_sets = {
+        name: set(
+            frame.loc[
+                frame["episode_type"].eq("preictal"), "source_event_id"
+            ].dropna()
+        )
+        for name, frame in frames.items()
+    }
+    if (
+        event_sets["train"] & event_sets["validation"]
+        or event_sets["train"] & event_sets["test"]
+        or event_sets["validation"] & event_sets["test"]
+    ):
+        raise AssertionError("Seizure events overlap across dataset splits.")
+    split_info = {
+        f"{name}_patients": sorted(frame["patient_id"].unique().tolist())
+        for name, frame in frames.items()
+    }
+    split_info["design"] = (
+        "event-disjoint; patient overlap intentionally follows requested quotas"
+    )
+    return frames["train"], frames["validation"], frames["test"], split_info
+
+
+def make_person_period(
+    landmarks: pd.DataFrame,
+    config: ForecastConfig = ForecastConfig(),
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Expand landmarks into at-risk bin rows for discrete-hazard likelihood."""
 
     base = landmarks[MODEL_FEATURE_COLUMNS].to_numpy(dtype=float)
     event_bins = landmarks["event_bin"].to_numpy(dtype=int)
-    has_event = landmarks["has_event_in_5m"].to_numpy(dtype=bool)
-    counts = np.where(has_event, event_bins + 1, N_BINS).astype(int)
+    has_event = landmarks["has_event_in_horizon"].to_numpy(dtype=bool)
+    counts = np.where(has_event, event_bins + 1, config.n_bins).astype(int)
     total_rows = int(counts.sum())
     x = np.empty((total_rows, len(HAZARD_FEATURE_COLUMNS)), dtype=np.float32)
     y = np.zeros(total_rows, dtype=np.uint8)
@@ -760,8 +988,10 @@ def make_person_period(landmarks: pd.DataFrame) -> tuple[np.ndarray, np.ndarray,
         x[cursor:stop, : len(MODEL_FEATURE_COLUMNS)] = base[row_index]
         lead_bins = np.arange(count, dtype=float)
         x[cursor:stop, -3] = lead_bins
-        x[cursor:stop, -2] = (lead_bins + 0.5) / N_BINS
-        x[cursor:stop, -1] = np.log1p((lead_bins + 0.5) * BIN_SECONDS)
+        x[cursor:stop, -2] = (lead_bins + 0.5) / config.n_bins
+        x[cursor:stop, -1] = np.log1p(
+            (lead_bins + 0.5) * config.bin_seconds
+        )
         if has_event[row_index]:
             y[stop - 1] = 1
         # Equal total influence per episode despite overlapping landmarks.
@@ -779,7 +1009,7 @@ def fit_hazard_model(
 ) -> HistGradientBoostingClassifier:
     """Fit a nonlinear discrete-time hazard model by weighted log loss."""
 
-    x, y, weights = make_person_period(development)
+    x, y, weights = make_person_period(development, config)
     model = HistGradientBoostingClassifier(
         loss="log_loss",
         learning_rate=config.learning_rate,
@@ -787,9 +1017,10 @@ def fit_hazard_model(
         max_leaf_nodes=config.max_leaf_nodes,
         min_samples_leaf=config.min_samples_leaf,
         l2_regularization=config.l2_regularization,
-        early_stopping=True,
-        validation_fraction=0.15,
-        n_iter_no_change=15,
+        # The separately specified validation seizures are reserved for model
+        # selection and thresholding, so no hidden random validation split is
+        # created inside the training set.
+        early_stopping=False,
         random_state=config.random_seed,
     )
     with warnings.catch_warnings():
@@ -801,8 +1032,9 @@ def fit_hazard_model(
 def predict_horizon_distribution(
     model: HistGradientBoostingClassifier,
     landmark_features: pd.DataFrame | np.ndarray,
+    config: ForecastConfig = ForecastConfig(),
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Return hazards, 60-bin probability mass, and no-event mass."""
+    """Return hazards, r/i-bin probability mass, and no-event mass."""
 
     if isinstance(landmark_features, pd.DataFrame):
         base = landmark_features[MODEL_FEATURE_COLUMNS].to_numpy(dtype=float)
@@ -812,17 +1044,18 @@ def predict_horizon_distribution(
         raise ValueError("Landmark feature matrix has an unexpected shape.")
 
     n_samples = len(base)
-    repeated = np.repeat(base, N_BINS, axis=0).astype(np.float32)
-    lead_bins = np.tile(np.arange(N_BINS, dtype=float), n_samples)
+    repeated = np.repeat(base, config.n_bins, axis=0).astype(np.float32)
+    lead_bins = np.tile(np.arange(config.n_bins, dtype=float), n_samples)
     x = np.empty(
-        (n_samples * N_BINS, len(HAZARD_FEATURE_COLUMNS)), dtype=np.float32
+        (n_samples * config.n_bins, len(HAZARD_FEATURE_COLUMNS)),
+        dtype=np.float32,
     )
     x[:, : len(MODEL_FEATURE_COLUMNS)] = repeated
     x[:, -3] = lead_bins
-    x[:, -2] = (lead_bins + 0.5) / N_BINS
-    x[:, -1] = np.log1p((lead_bins + 0.5) * BIN_SECONDS)
+    x[:, -2] = (lead_bins + 0.5) / config.n_bins
+    x[:, -1] = np.log1p((lead_bins + 0.5) * config.bin_seconds)
 
-    hazards = model.predict_proba(x)[:, 1].reshape(n_samples, N_BINS)
+    hazards = model.predict_proba(x)[:, 1].reshape(n_samples, config.n_bins)
     hazards = np.clip(hazards, 1e-7, 1 - 1e-7)
     survival_before = np.concatenate(
         [
@@ -842,6 +1075,7 @@ def _warning_summary(
     frame: pd.DataFrame,
     risk: np.ndarray,
     threshold: float,
+    bin_seconds: int = BIN_SECONDS,
 ) -> dict[str, float]:
     scored = frame[
         ["episode_id", "patient_id", "episode_type", "landmark_step", "time_to_event_seconds"]
@@ -861,7 +1095,7 @@ def _warning_summary(
     ).groupby("episode_id"):
         values = group["warning"].to_numpy(dtype=bool)
         false_alarms += int(np.sum(values & ~np.r_[False, values[:-1]]))
-    negative_hours = len(negative) * BIN_SECONDS / 3600.0
+    negative_hours = len(negative) * bin_seconds / 3600.0
     false_alarms_per_hour = (
         float(false_alarms / negative_hours) if negative_hours else float("nan")
     )
@@ -887,6 +1121,7 @@ def select_warning_threshold(
     development: pd.DataFrame,
     risk: np.ndarray,
     target_time_in_warning: float = 0.25,
+    bin_seconds: int = BIN_SECONDS,
 ) -> tuple[float, pd.DataFrame]:
     """Choose a development-only warning threshold under a TiW target."""
 
@@ -894,7 +1129,9 @@ def select_warning_threshold(
     candidates = np.unique(np.r_[0.0, np.quantile(risk, quantiles), 1.0])
     rows: list[dict[str, float]] = []
     for threshold in candidates:
-        summary = _warning_summary(development, risk, float(threshold))
+        summary = _warning_summary(
+            development, risk, float(threshold), bin_seconds
+        )
         rows.append({"threshold": float(threshold), **summary})
     curve = pd.DataFrame(rows)
     eligible = curve.loc[curve["time_in_warning"] <= target_time_in_warning].copy()
@@ -912,13 +1149,16 @@ def select_warning_threshold(
     return float(selected["threshold"]), curve
 
 
-def _class_baseline(development: pd.DataFrame) -> np.ndarray:
+def _class_baseline(
+    development: pd.DataFrame,
+    config: ForecastConfig = ForecastConfig(),
+) -> np.ndarray:
     targets = np.where(
-        development["has_event_in_5m"].to_numpy(dtype=bool),
+        development["has_event_in_horizon"].to_numpy(dtype=bool),
         development["event_bin"].to_numpy(dtype=int),
-        N_BINS,
+        config.n_bins,
     )
-    counts = np.bincount(targets, minlength=N_BINS + 1).astype(float)
+    counts = np.bincount(targets, minlength=config.n_bins + 1).astype(float)
     return counts / counts.sum()
 
 
@@ -927,20 +1167,26 @@ def evaluate_forecasts(
     development: pd.DataFrame,
     holdout: pd.DataFrame,
     warning_time_target: float = 0.25,
+    config: ForecastConfig = ForecastConfig(),
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, float, pd.DataFrame]:
     """Evaluate probability, timing, and operational warning performance."""
 
     _, development_pmf, development_no_event = predict_horizon_distribution(
-        model, development
+        model, development, config
     )
     development_risk = 1.0 - development_no_event
     threshold, threshold_curve = select_warning_threshold(
-        development, development_risk, warning_time_target
+        development,
+        development_risk,
+        warning_time_target,
+        config.bin_seconds,
     )
 
-    hazards, pmf, no_event = predict_horizon_distribution(model, holdout)
+    hazards, pmf, no_event = predict_horizon_distribution(
+        model, holdout, config
+    )
     risk = 1.0 - no_event
-    has_event = holdout["has_event_in_5m"].to_numpy(dtype=bool)
+    has_event = holdout["has_event_in_horizon"].to_numpy(dtype=bool)
     event_bin = holdout["event_bin"].to_numpy(dtype=int)
     rows = np.arange(len(holdout))
     target_probability = np.where(has_event, pmf[rows, event_bin], no_event)
@@ -958,14 +1204,16 @@ def evaluate_forecasts(
     truth_survival = np.ones_like(predicted_survival)
     if has_event.any():
         truth_survival[has_event] = (
-            np.arange(N_BINS)[None, :] < event_bin[has_event, None]
+            np.arange(config.n_bins)[None, :] < event_bin[has_event, None]
         )
     integrated_brier = np.mean(
         np.square(predicted_survival - truth_survival), axis=1
     )
 
     conditional_pmf = pmf / np.clip(risk[:, None], 1e-12, None)
-    bin_midpoints = (np.arange(N_BINS) + 0.5) * BIN_SECONDS
+    bin_midpoints = (
+        np.arange(config.n_bins) + 0.5
+    ) * config.bin_seconds
     expected_seconds = conditional_pmf @ bin_midpoints
     timing_error = np.full(len(holdout), np.nan)
     timing_error[has_event] = np.abs(
@@ -973,9 +1221,9 @@ def evaluate_forecasts(
         - holdout.loc[has_event, "time_to_event_seconds"].to_numpy(dtype=float)
     )
 
-    baseline = _class_baseline(development)
+    baseline = _class_baseline(development, config)
     reference_brier = np.square(baseline).sum() + 1.0 - 2.0 * np.where(
-        has_event, baseline[event_bin], baseline[N_BINS]
+        has_event, baseline[event_bin], baseline[config.n_bins]
     )
     brier_skill = 1.0 - categorical_brier.mean() / reference_brier.mean()
 
@@ -990,11 +1238,11 @@ def evaluate_forecasts(
             "landmark_seconds",
             "time_to_event_seconds",
             "event_bin",
-            "has_event_in_5m",
+            "has_event_in_horizon",
         ]
     ].reset_index(drop=True)
-    prediction_columns["event_risk_5m"] = risk
-    prediction_columns["no_event_probability_5m"] = no_event
+    prediction_columns["event_risk"] = risk
+    prediction_columns["no_event_probability"] = no_event
     prediction_columns["negative_log_likelihood"] = nll
     prediction_columns["categorical_brier"] = categorical_brier
     prediction_columns["binary_brier"] = binary_brier
@@ -1002,10 +1250,13 @@ def evaluate_forecasts(
     prediction_columns["expected_seconds_given_event"] = expected_seconds
     prediction_columns["absolute_timing_error_seconds"] = timing_error
     prediction_columns["warning"] = risk >= threshold
-    for index in range(N_BINS):
+    for index in range(config.n_bins):
         prediction_columns[f"p_bin_{index + 1:02d}"] = pmf[:, index]
 
-    warning_metrics = _warning_summary(holdout, risk, threshold)
+    warning_metrics = _warning_summary(
+        holdout, risk, threshold, config.bin_seconds
+    )
+    horizon_label = f"{config.horizon_seconds / 60:g}-minute"
     metrics = [
         {
             "metric": "negative log likelihood",
@@ -1015,7 +1266,10 @@ def evaluate_forecasts(
         {
             "metric": "multicategory Brier score",
             "value": float(categorical_brier.mean()),
-            "interpretation": "Lower is better; probability error across 60 bins plus no-event.",
+            "interpretation": (
+                f"Lower is better; probability error across {config.n_bins} "
+                "bins plus no-event."
+            ),
         },
         {
             "metric": "multicategory Brier skill score",
@@ -1025,15 +1279,18 @@ def evaluate_forecasts(
         {
             "metric": "integrated survival Brier score",
             "value": float(integrated_brier.mean()),
-            "interpretation": "Lower is better; mean survival-probability error across 5 minutes.",
+            "interpretation": (
+                "Lower is better; mean survival-probability error across "
+                f"{horizon_label} horizon."
+            ),
         },
         {
-            "metric": "5-minute AUROC",
+            "metric": f"{horizon_label} AUROC",
             "value": float(roc_auc_score(has_event, risk)),
             "interpretation": "Discrimination only; does not assess calibration.",
         },
         {
-            "metric": "5-minute average precision",
+            "metric": f"{horizon_label} average precision",
             "value": float(average_precision_score(has_event, risk)),
             "interpretation": "Ranking metric sensitive to event prevalence.",
         },
@@ -1050,7 +1307,10 @@ def evaluate_forecasts(
         {
             "metric": "time in warning",
             "value": warning_metrics["time_in_warning"],
-            "interpretation": "Fraction of evaluated five-second landmarks under warning.",
+            "interpretation": (
+                f"Fraction of evaluated {config.bin_seconds}-second landmarks "
+                "under warning."
+            ),
         },
         {
             "metric": "false alarms per hour",
@@ -1072,9 +1332,11 @@ def evaluate_forecasts(
 
     patient_rows: list[dict[str, Any]] = []
     for patient_id, group in prediction_columns.groupby("patient_id"):
-        group_risk = group["event_risk_5m"].to_numpy()
-        group_has_event = group["has_event_in_5m"].to_numpy(dtype=bool)
-        warning = _warning_summary(group, group_risk, threshold)
+        group_risk = group["event_risk"].to_numpy()
+        group_has_event = group["has_event_in_horizon"].to_numpy(dtype=bool)
+        warning = _warning_summary(
+            group, group_risk, threshold, config.bin_seconds
+        )
         patient_rows.append(
             {
                 "patient_id": patient_id,
@@ -1117,8 +1379,148 @@ def extract_context_features_from_edf(
         min_channels=config.min_eeg_channels,
     )
     micro = segment_micro_features(data, sample_rate, config)
-    aggregated = aggregate_context(micro[-MICRO_WINDOWS_PER_CONTEXT:])
+    aggregated = aggregate_context(
+        micro[-config.context_bins :], config.bin_seconds
+    )
     return pd.DataFrame([aggregated], columns=MODEL_FEATURE_COLUMNS)
+
+
+def build_seizure_reading_forecasts(
+    model: HistGradientBoostingClassifier,
+    seizure_manifest: pd.DataFrame,
+    landmarks: pd.DataFrame,
+    config: ForecastConfig = ForecastConfig(),
+    verbose: bool = True,
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """Forecast every reading from ``-m`` through onset for each seizure.
+
+    Existing cached landmark features provide readings ``-m`` through ``-i``.
+    Only the final onset-time context is read from each EDF. All feature rows
+    are then forecast in one model batch.
+    """
+
+    config.validate()
+    seizures = seizure_manifest.loc[
+        seizure_manifest["episode_type"].eq("preictal")
+    ].copy()
+    if seizures.empty:
+        raise ValueError("No preictal seizures were supplied.")
+
+    feature_frames: list[pd.DataFrame] = []
+    metadata_rows: list[dict[str, Any]] = []
+    for number, episode in enumerate(seizures.itertuples(), start=1):
+        cached = landmarks.loc[
+            landmarks["episode_id"].eq(episode.episode_id)
+        ].sort_values("landmark_step")
+        if len(cached) != config.pre_onset_steps:
+            raise ValueError(
+                f"{episode.episode_id} has {len(cached)} cached readings; "
+                f"expected {config.pre_onset_steps}."
+            )
+        onset_features = extract_context_features_from_edf(
+            episode.edf_path,
+            float(episode.event_onset_seconds),
+            config,
+        )
+        episode_features = pd.concat(
+            [
+                cached[MODEL_FEATURE_COLUMNS].reset_index(drop=True),
+                onset_features,
+            ],
+            ignore_index=True,
+        )
+        feature_frames.append(episode_features)
+        for reading_index in range(config.reading_count):
+            seconds_before = (
+                config.pre_onset_seconds
+                - reading_index * config.bin_seconds
+            )
+            metadata_rows.append(
+                {
+                    "dataset_split": episode.dataset_split,
+                    "patient_id": episode.patient_id,
+                    "source_event_id": episode.source_event_id,
+                    "episode_id": episode.episode_id,
+                    "recording": episode.recording,
+                    "reading_index": reading_index,
+                    "landmark_seconds": (
+                        float(episode.event_onset_seconds) - seconds_before
+                    ),
+                    "seconds_before_onset": seconds_before,
+                    "minutes_before_onset": seconds_before / 60.0,
+                }
+            )
+        if verbose:
+            print(
+                f"[{number:>2}/{len(seizures)}] onset context "
+                f"{episode.source_event_id} ({episode.dataset_split})",
+                flush=True,
+            )
+
+    all_features = pd.concat(feature_frames, ignore_index=True)
+    reading_metadata = pd.DataFrame(metadata_rows)
+    if len(all_features) != len(reading_metadata):
+        raise AssertionError("Reading feature and metadata counts differ.")
+    _, pmf, no_event = predict_horizon_distribution(
+        model, all_features, config
+    )
+    risk = 1.0 - no_event
+    conditional = pmf / np.clip(risk[:, None], 1e-12, None)
+
+    repeated_metadata = reading_metadata.loc[
+        reading_metadata.index.repeat(config.n_bins)
+    ].reset_index(drop=True)
+    future_bins = np.tile(
+        np.arange(1, config.n_bins + 1, dtype=int), len(reading_metadata)
+    )
+    repeated_metadata["future_bin"] = future_bins
+    repeated_metadata["future_interval_start_seconds"] = (
+        future_bins - 1
+    ) * config.bin_seconds
+    repeated_metadata["future_interval_end_seconds"] = (
+        future_bins * config.bin_seconds
+    )
+    repeated_metadata["onset_probability"] = pmf.reshape(-1)
+    repeated_metadata["timing_probability_given_event"] = conditional.reshape(
+        -1
+    )
+    repeated_metadata["event_risk"] = np.repeat(risk, config.n_bins)
+    repeated_metadata["no_event_probability"] = np.repeat(
+        no_event, config.n_bins
+    )
+
+    peak_indices = np.argmax(pmf, axis=1)
+    peak_rows = reading_metadata.copy()
+    peak_rows["peak_bin"] = peak_indices + 1
+    peak_rows["peak_probability"] = pmf[
+        np.arange(len(pmf)), peak_indices
+    ]
+    peak_rows["event_risk"] = risk
+    peak_rows["no_event_probability"] = no_event
+    peak_rows["peak_entry"] = [
+        f"({int(bin_number)}, {probability:.6f})"
+        for bin_number, probability in zip(
+            peak_rows["peak_bin"],
+            peak_rows["peak_probability"],
+            strict=True,
+        )
+    ]
+    peak_matrix = peak_rows.pivot(
+        index=["reading_index", "minutes_before_onset"],
+        columns="source_event_id",
+        values="peak_entry",
+    ).reset_index()
+    peak_matrix.columns.name = None
+
+    total_mass = (
+        repeated_metadata.groupby(
+            ["source_event_id", "reading_index"], sort=False
+        )["onset_probability"].sum().to_numpy()
+        + no_event
+    )
+    if not np.allclose(total_mass, 1.0, atol=1e-8):
+        raise AssertionError("A reading forecast does not sum to one.")
+    return repeated_metadata, peak_rows, peak_matrix
 
 
 def moving_horizon_forecast_table(
@@ -1126,11 +1528,11 @@ def moving_horizon_forecast_table(
     episode_step: int,
     config: ForecastConfig = ForecastConfig(),
 ) -> tuple[pd.DataFrame, float]:
-    """Return 60 future bins, shifted by ``episode_step`` from the anchor."""
+    """Return r/i future bins, shifted by ``episode_step`` from the anchor."""
 
     pmf = np.asarray(pmf, dtype=float).reshape(-1)
-    if len(pmf) != N_BINS:
-        raise ValueError(f"Expected {N_BINS} event-bin probabilities.")
+    if len(pmf) != config.n_bins:
+        raise ValueError(f"Expected {config.n_bins} event-bin probabilities.")
     if episode_step < 0:
         raise ValueError("episode_step must be nonnegative.")
     visible = pmf.copy()
@@ -1140,14 +1542,20 @@ def moving_horizon_forecast_table(
         visible / event_risk if event_risk > 1e-12 else np.zeros_like(visible)
     )
     cumulative = np.cumsum(visible)
-    absolute_bins = np.arange(episode_step + 1, episode_step + N_BINS + 1)
+    absolute_bins = np.arange(
+        episode_step + 1, episode_step + config.n_bins + 1
+    )
     table = pd.DataFrame(
         {
             "absolute_episode_bin": absolute_bins,
             "interval_start_seconds": (absolute_bins - 1) * config.bin_seconds,
             "interval_end_seconds": absolute_bins * config.bin_seconds,
-            "seconds_ahead_start": np.arange(N_BINS) * config.bin_seconds,
-            "seconds_ahead_end": (np.arange(N_BINS) + 1) * config.bin_seconds,
+            "seconds_ahead_start": (
+                np.arange(config.n_bins) * config.bin_seconds
+            ),
+            "seconds_ahead_end": (
+                (np.arange(config.n_bins) + 1) * config.bin_seconds
+            ),
             "onset_probability": visible,
             "timing_probability_given_event": conditional,
             "cumulative_onset_probability": cumulative,
@@ -1163,11 +1571,11 @@ fixed_episode_forecast_table = moving_horizon_forecast_table
 
 
 class RollingForecastEngine:
-    """Optimized offline rolling forecaster with a constant 60-bin horizon.
+    """Optimized offline rolling forecaster with a constant r/i-bin horizon.
 
     The expensive work is performed once: a contiguous prerecorded EEG replay
     is read once, five-second features are cached, all overlapping 120-second
-    contexts are formed, and every 60-bin forecast is evaluated in one model
+    contexts are formed, and every r/i-bin forecast is evaluated in one model
     batch.  ``advance_to`` then performs a cached lookup at each boundary.
     """
 
@@ -1177,9 +1585,11 @@ class RollingForecastEngine:
         edf_path: str | Path,
         episode_anchor_seconds: float,
         config: ForecastConfig = ForecastConfig(),
-        replay_duration_seconds: int = HORIZON_SECONDS,
+        replay_duration_seconds: int | None = None,
     ) -> None:
         config.validate()
+        if replay_duration_seconds is None:
+            replay_duration_seconds = config.pre_onset_seconds
         if replay_duration_seconds < 0:
             raise ValueError("replay_duration_seconds must be nonnegative.")
         if replay_duration_seconds % config.bin_seconds:
@@ -1223,7 +1633,8 @@ class RollingForecastEngine:
         contexts = np.vstack(
             [
                 aggregate_context(
-                    micro[step : step + MICRO_WINDOWS_PER_CONTEXT]
+                    micro[step : step + self.config.context_bins],
+                    self.config.bin_seconds,
                 )
                 for step in range(self.max_step + 1)
             ]
@@ -1235,7 +1646,9 @@ class RollingForecastEngine:
             self.precomputed_hazards,
             self.precomputed_pmf,
             self.precomputed_no_event,
-        ) = predict_horizon_distribution(self.model, self.context_features)
+        ) = predict_horizon_distribution(
+            self.model, self.context_features, self.config
+        )
         self.precomputed_tables = [
             moving_horizon_forecast_table(
                 self.precomputed_pmf[step], step, self.config
@@ -1260,7 +1673,7 @@ class RollingForecastEngine:
         }
 
     def advance_to(self, recording_seconds: float) -> dict[str, Any]:
-        """Return a new cached 60-bin forecast only at a crossed boundary."""
+        """Return a new cached r/i-bin forecast only at a crossed boundary."""
 
         elapsed = float(recording_seconds) - self.episode_anchor_seconds
         if elapsed < 0:
@@ -1288,17 +1701,17 @@ class RollingForecastEngine:
             "landmark_seconds": landmark_seconds,
             "horizon_start_seconds": landmark_seconds,
             "horizon_end_seconds": landmark_seconds + self.config.horizon_seconds,
-            "forecast_bins": N_BINS,
+            "forecast_bins": self.config.n_bins,
             "expired_absolute_bin": step if step > 0 else None,
-            "appended_absolute_bin": step + N_BINS,
-            "event_risk_next_5m": float(
+            "appended_absolute_bin": step + self.config.n_bins,
+            "event_risk": float(
                 1.0 - self.precomputed_no_event[step]
             ),
-            "no_event_probability_next_5m": float(
+            "no_event_probability": float(
                 self.precomputed_no_event[step]
             ),
-            "hazards_next_5m": self.precomputed_hazards[step],
-            "pmf_next_5m": self.precomputed_pmf[step],
+            "hazards": self.precomputed_hazards[step],
+            "pmf": self.precomputed_pmf[step],
             "probability_table": self.precomputed_tables[step],
             "update_count": self.update_count,
             "batch_precomputation_count": 1,
@@ -1308,6 +1721,189 @@ class RollingForecastEngine:
             "recomputed": True,
         }
         return self.last_result
+
+
+def readable_feature_name(feature: str) -> str:
+    """Convert a model column into a concise human-readable EEG label."""
+
+    aggregation_labels = {
+        "mean": "context mean",
+        "std": "context variability",
+        "last": "most recent interval",
+        "slope": "two-minute trend",
+    }
+    aggregation = next(
+        (
+            label
+            for suffix, label in aggregation_labels.items()
+            if feature.endswith(f"_{suffix}")
+        ),
+        "",
+    )
+    base = feature.rsplit("_", 1)[0] if aggregation else feature
+    replacements = {
+        "relative_delta": "delta relative power",
+        "relative_theta": "theta relative power",
+        "relative_alpha": "alpha relative power",
+        "relative_beta": "beta relative power",
+        "relative_low_gamma": "low-gamma relative power",
+        "log_power_delta": "delta log power",
+        "log_power_theta": "theta log power",
+        "log_power_alpha": "alpha log power",
+        "log_power_beta": "beta log power",
+        "log_power_low_gamma": "low-gamma log power",
+        "log_rms": "log RMS amplitude",
+        "log_line_length": "log line length",
+        "spectral_entropy": "spectral entropy",
+        "usable_channel_fraction": "usable-channel fraction",
+    }
+    base_label = replacements.get(base, base.replace("_", " "))
+    return (
+        f"{base_label} — {aggregation}"
+        if aggregation
+        else base_label
+    )
+
+
+def _forecast_negative_log_likelihood(
+    frame: pd.DataFrame,
+    pmf: np.ndarray,
+    no_event: np.ndarray,
+) -> float:
+    """Mean categorical log loss for event-bin or no-event targets."""
+
+    has_event = frame["has_event_in_horizon"].to_numpy(dtype=bool)
+    event_bin = frame["event_bin"].to_numpy(dtype=int)
+    target_probability = no_event.copy()
+    event_rows = np.flatnonzero(has_event)
+    target_probability[event_rows] = pmf[
+        event_rows, event_bin[event_rows]
+    ]
+    return float(
+        -np.log(np.clip(target_probability, 1e-12, None)).mean()
+    )
+
+
+def permutation_feature_importance(
+    model: HistGradientBoostingClassifier,
+    validation: pd.DataFrame,
+    config: ForecastConfig = ForecastConfig(),
+    n_repeats: int = 2,
+    random_seed: int | None = None,
+) -> pd.DataFrame:
+    """Model-agnostic global importance using validation log-loss increase.
+
+    A positive value means that shuffling the feature worsened validation
+    negative log likelihood, so the fitted model relied on that feature.
+    Correlated EEG features can share or mask importance; this is descriptive,
+    not causal.
+    """
+
+    if n_repeats < 1:
+        raise ValueError("n_repeats must be at least one.")
+    seed = config.random_seed if random_seed is None else random_seed
+    rng = np.random.default_rng(seed)
+    base = validation[MODEL_FEATURE_COLUMNS].copy().reset_index(drop=True)
+    _, baseline_pmf, baseline_no_event = predict_horizon_distribution(
+        model, base, config
+    )
+    baseline_nll = _forecast_negative_log_likelihood(
+        validation.reset_index(drop=True),
+        baseline_pmf,
+        baseline_no_event,
+    )
+
+    rows: list[dict[str, Any]] = []
+    for feature in MODEL_FEATURE_COLUMNS:
+        repeat_importance: list[float] = []
+        original = base[feature].to_numpy(copy=True)
+        for _ in range(n_repeats):
+            permuted = base.copy()
+            permuted[feature] = rng.permutation(original)
+            _, pmf, no_event = predict_horizon_distribution(
+                model, permuted, config
+            )
+            permuted_nll = _forecast_negative_log_likelihood(
+                validation.reset_index(drop=True), pmf, no_event
+            )
+            repeat_importance.append(permuted_nll - baseline_nll)
+        rows.append(
+            {
+                "feature": feature,
+                "readable_feature": readable_feature_name(feature),
+                "importance_nll_increase": float(
+                    np.mean(repeat_importance)
+                ),
+                "importance_std": float(np.std(repeat_importance)),
+                "baseline_validation_nll": baseline_nll,
+                "repeats": n_repeats,
+            }
+        )
+    return pd.DataFrame(rows).sort_values(
+        "importance_nll_increase", ascending=False
+    ).reset_index(drop=True)
+
+
+def local_counterfactual_explanation(
+    model: HistGradientBoostingClassifier,
+    reading: pd.DataFrame,
+    reference: pd.DataFrame | pd.Series,
+    config: ForecastConfig = ForecastConfig(),
+) -> pd.DataFrame:
+    """Explain one forecast by replacing each feature with a reference value.
+
+    ``risk_change_when_observed`` is original risk minus counterfactual risk.
+    Positive values mean the observed feature value raised the forecast versus
+    its training-median reference. The effects are sensitivity checks and are
+    not additive Shapley values or causal effects.
+    """
+
+    if len(reading) != 1:
+        raise ValueError("Exactly one reading row is required.")
+    base = reading[MODEL_FEATURE_COLUMNS].reset_index(drop=True)
+    if isinstance(reference, pd.DataFrame):
+        reference_values = reference[MODEL_FEATURE_COLUMNS].median()
+    else:
+        reference_values = reference.reindex(MODEL_FEATURE_COLUMNS)
+    if reference_values.isna().any():
+        raise ValueError("Reference feature values contain missing data.")
+
+    _, _, original_no_event = predict_horizon_distribution(
+        model, base, config
+    )
+    original_risk = float(1.0 - original_no_event[0])
+    counterfactual = pd.DataFrame(
+        np.repeat(base.to_numpy(dtype=float), len(MODEL_FEATURE_COLUMNS), axis=0),
+        columns=MODEL_FEATURE_COLUMNS,
+    )
+    for index, feature in enumerate(MODEL_FEATURE_COLUMNS):
+        counterfactual.at[index, feature] = float(reference_values[feature])
+    _, _, counterfactual_no_event = predict_horizon_distribution(
+        model, counterfactual, config
+    )
+    counterfactual_risk = 1.0 - counterfactual_no_event
+    result = pd.DataFrame(
+        {
+            "feature": MODEL_FEATURE_COLUMNS,
+            "readable_feature": [
+                readable_feature_name(feature)
+                for feature in MODEL_FEATURE_COLUMNS
+            ],
+            "observed_value": base.iloc[0].to_numpy(dtype=float),
+            "training_median": reference_values.to_numpy(dtype=float),
+            "original_event_risk": original_risk,
+            "counterfactual_event_risk": counterfactual_risk,
+            "risk_change_when_observed": (
+                original_risk - counterfactual_risk
+            ),
+        }
+    )
+    result["absolute_risk_change"] = result[
+        "risk_change_when_observed"
+    ].abs()
+    return result.sort_values(
+        "absolute_risk_change", ascending=False
+    ).reset_index(drop=True)
 
 
 def save_model_bundle(

@@ -1,12 +1,28 @@
-file,size_kb,purpose
-ARTIFACT_INVENTORY.csv,0.8,Generated notebook artifact
-development_warning_curve.csv,12.2,Sensitivity/TiW threshold trade-off
-episode_manifest.csv,16.2,Exact EDF episodes and anchors used
-forecast_evaluation.png,87.6,Calibration and warning trade-off plot
-holdout_landmark_probabilities.csv,2612.8,Every holdout landmark and all 60 bin probabilities
-holdout_metrics.csv,1.2,Overall holdout scores
-holdout_patient_metrics.csv,0.4,Per-patient holdout scores
-moving_horizon_rolling_example.csv,24.2,Readable moving-horizon probability tables
-moving_horizon_rolling_example.png,106.0,Four rolling 60-bin probability graphs
-rolling_discrete_hazard_model.joblib,333.9,Fitted model bundle and configuration
-study_summary.csv,0.2,Readable study/data inventory
+file,size_mb,purpose
+all_seizure_peak_bin_matrix.csv,0.05,"47 seizure columns with (bin, probability) entries"
+all_seizure_peak_readings.csv,0.453,one peak bin and probability per reading
+all_seizure_reading_probabilities.csv,29.205,every reading × every future-bin probability
+ARTIFACT_INVENTORY.csv,0.002,prior/generated analysis artifact
+development_warning_curve.csv,0.012,prior/generated analysis artifact
+episode_manifest.csv,0.017,all selected seizure/control EDF episodes
+forecast_evaluation.png,0.09,prior/generated analysis artifact
+global_permutation_importance.csv,0.007,global validation feature importance
+holdout_landmark_probabilities.csv,2.676,prior/generated analysis artifact
+holdout_metrics.csv,0.001,prior/generated analysis artifact
+holdout_patient_metrics.csv,0.0,prior/generated analysis artifact
+local_counterfactual_explanation.csv,0.009,local test-forecast sensitivity
+model_interpretability.png,0.199,global and local interpretation plots
+moving_horizon_rolling_example.csv,0.025,prior/generated analysis artifact
+moving_horizon_rolling_example.png,0.109,prior/generated analysis artifact
+rolling_discrete_hazard_model.joblib,0.34,"trained model, parameters, split, and metrics"
+seizure_split_allocation.csv,0.003,exact random seed-42 seizure assignment
+study_summary.csv,0.0,prior/generated analysis artifact
+test_landmark_probabilities.csv,1.418,all test landmark forecasts
+test_metrics.csv,0.001,held-out test performance
+test_patient_metrics.csv,0.001,prior/generated analysis artifact
+test_peak_bin_matrix.csv,0.009,test-only readable peak matrix
+test_reading_probability_heatmaps.png,0.554,all test reading probability graphs
+validation_landmark_probabilities.csv,0.709,all validation landmark forecasts
+validation_metrics.csv,0.001,validation performance
+validation_patient_metrics.csv,0.0,prior/generated analysis artifact
+validation_warning_curve.csv,0.012,prior/generated analysis artifact
