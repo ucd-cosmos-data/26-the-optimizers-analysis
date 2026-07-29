@@ -1,70 +1,81 @@
-import matplotlib
 import numpy as np
+import pytest
 
-matplotlib.use("Agg")
-
-from seizure_sensor_selection import (  # noqa: E402
-    PersonalizedSensorSelector,
-    compute_alarm_metrics,
+from seizure_sensor_selection import (
+    CohortSensorCountSelector,
+    select_sensor_count,
 )
 
 
-def test_alarm_metrics_counts_events_and_debounces_false_alarms():
-    y = np.array([0, 0, 0, 1, 1, 1, 1])
-    p = np.array([0.8, 0.9, 0.8, 0.1, 0.8, 0.2, 0.9])
-    metrics = compute_alarm_metrics(
-        y,
-        p,
-        duration_hours=np.repeat(0.5, len(y)),
-        seizure_ids=np.array([-1, -1, -1, 10, 10, 11, 11]),
-        time_to_seizure_minutes=np.array(
-            [np.nan, np.nan, np.nan, 30, 20, 25, 5]
-        ),
-        window_start_minutes=np.array([0, 5, 50, 100, 110, 200, 210]),
-        refractory_minutes=30,
-    )
-    assert metrics.sensitivity == 1.0
-    assert metrics.n_false_alarms == 2
-    assert metrics.false_alarms_per_hour == 2 / 1.5
-    assert metrics.mean_warning_time_minutes == 12.5
+def _cohort(seed: int = 7):
+    """Synthetic cohort where one sensor contains nearly all useful signal."""
+
+    rng = np.random.default_rng(seed)
+    n_subjects, windows_per_subject, p = 6, 40, 5
+    subjects = np.repeat(np.arange(n_subjects), windows_per_subject)
+    y = np.tile(np.repeat([0, 1], windows_per_subject // 2), n_subjects)
+    X = rng.normal(scale=0.25, size=(len(y), p, 1))
+    X[:, 3, 0] += 3.0 * y
+    return X, y, subjects
 
 
-def test_end_to_end_returns_indices_metrics_and_plot(tmp_path):
-    rng = np.random.default_rng(4)
-    n_groups, windows_per_group, p, f = 12, 10, 5, 2
-    n = n_groups * windows_per_group
-    groups = np.repeat(np.arange(n_groups), windows_per_group)
-    y = np.tile(np.array([0, 0, 0, 0, 0, 1, 1, 1, 1, 1]), n_groups)
-    X = rng.normal(size=(n, p, f))
-    X[:, 2, 0] += 2.0 * y
-    seizure_ids = np.where(y == 1, groups, -1)
-    metadata = {
-        "duration_hours": np.repeat(1 / 60, n),
-        "seizure_ids": seizure_ids,
-        "time_to_seizure_minutes": np.where(
-            y == 1, np.tile([np.nan] * 5 + [25, 20, 15, 10, 5], n_groups), np.nan
-        ),
-        "window_start_minutes": np.arange(n, dtype=float),
-    }
-    path = tmp_path / "curve.png"
-    selector = PersonalizedSensorSelector(
-        max_sensors=3,
+def test_returns_only_cohort_level_integer_k():
+    X, y, subjects = _cohort()
+    selector = CohortSensorCountSelector(
+        noninferiority_margin=0.02,
+        confidence=0.90,
         inner_splits=3,
         outer_splits=3,
-        swap_refinement=False,
-        random_state=1,
+        random_state=2,
     )
-    result = selector.fit_select(
+    result = selector.select_k(X, y, subjects=subjects)
+
+    assert type(result) is int
+    assert result == 1
+    assert selector.k_ == 1
+    assert len(selector.count_curve_) == X.shape[1]
+    assert selector.count_curve_[-1].mean_difference_from_full == 0
+    assert not hasattr(selector, "selected_sensor_indices_")
+    assert not hasattr(selector, "selected_sensor_names_")
+
+
+def test_convenience_function_returns_k():
+    X, y, subjects = _cohort()
+    X[::17, 0, 0] = np.nan
+    k = select_sensor_count(
         X,
         y,
-        metadata=metadata,
-        groups=groups,
-        sensor_names=[f"EEG-{i}" for i in range(p)],
-        plot_path=path,
+        subjects=subjects,
+        confidence=0.90,
+        inner_splits=3,
+        outer_splits=3,
     )
-    assert 2 in result.selected_sensor_indices
-    assert 1 <= result.elbow_k <= 3
-    assert 0 <= result.nested_cv_metrics.sensitivity <= 1
-    assert result.figure is not None
-    assert path.exists()
-    assert selector.predict_proba(X[:3]).shape == (3,)
+    assert type(k) is int
+    assert 1 <= k <= X.shape[1]
+
+
+def test_requires_subject_level_nonpersonalized_input():
+    X, y, subjects = _cohort()
+    subjects[subjects == 5] = 4
+    y[subjects == 4] = 1
+    selector = CohortSensorCountSelector(outer_splits=3)
+    with pytest.raises(ValueError, match="Every subject"):
+        selector.select_k(X, y, subjects=subjects)
+
+
+def test_plateau_rule_does_not_jump_over_a_failed_count():
+    selector = CohortSensorCountSelector(
+        noninferiority_margin=0.02,
+        confidence=0.95,
+    )
+    # k=4 and k=3 match the five-sensor baseline, k=2 fails. Even though k=1
+    # happens to score well, it is disconnected from the baseline plateau.
+    scores = np.array(
+        [
+            [0.91, 0.70, 0.89, 0.90, 0.90],
+            [0.89, 0.71, 0.90, 0.91, 0.90],
+            [0.90, 0.69, 0.90, 0.90, 0.90],
+            [0.91, 0.70, 0.91, 0.90, 0.90],
+        ]
+    )
+    assert selector._smallest_noninferior_k(scores) == 3

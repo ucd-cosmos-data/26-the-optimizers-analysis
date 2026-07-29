@@ -35,9 +35,10 @@ from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import StandardScaler
 
 import rolling_seizure_forecasting as rsf
+import split_eeg_channels as split_eeg
 
 
-MODULE_VERSION = "2.0.0"
+MODULE_VERSION = "3.0.0"
 PER_CHANNEL_FEATURE_NAMES = tuple(rsf.MICRO_FEATURE_NAMES)
 AGGREGATIONS = tuple(rsf.AGGREGATIONS)
 COMPACT_FEATURE_NAMES = (
@@ -236,15 +237,14 @@ def canonical_channel_name(label: str) -> str:
 
 
 def common_patient_channels(patient_manifest: pd.DataFrame) -> list[str]:
-    """Return EEG channels available in every episode recording for a patient."""
+    """Return channels available in every split-data episode recording."""
 
     channel_sets: list[set[str]] = []
     for edf_path in patient_manifest["edf_path"].drop_duplicates():
-        metadata = rsf.edf_metadata(edf_path)
+        metadata = split_eeg.split_eeg_metadata(edf_path)
         names = {
             canonical_channel_name(label)
             for label in metadata["labels"]
-            if rsf._is_eeg_label(label)
         }
         channel_sets.append(names)
     if not channel_sets:
@@ -273,17 +273,17 @@ def _per_channel_micro_features(
         axis=1,
     )
     analysis = (frequencies >= 0.5) & (frequencies <= 45.0)
-    total_power = np.trapezoid(psd[:, analysis], frequencies[analysis], axis=1)
+    total_power = np.trapz(psd[:, analysis], frequencies[analysis], axis=1)
     total_power = np.clip(total_power, 1e-12, None)
     columns: list[np.ndarray] = []
     for low, high in rsf.BANDS.values():
         mask = (frequencies >= low) & (frequencies < high)
-        band_power = np.trapezoid(psd[:, mask], frequencies[mask], axis=1)
+        band_power = np.trapz(psd[:, mask], frequencies[mask], axis=1)
         band_power = np.clip(band_power, 1e-12, None)
         columns.append(band_power / total_power)
     for low, high in rsf.BANDS.values():
         mask = (frequencies >= low) & (frequencies < high)
-        band_power = np.trapezoid(psd[:, mask], frequencies[mask], axis=1)
+        band_power = np.trapz(psd[:, mask], frequencies[mask], axis=1)
         columns.append(np.log10(np.clip(band_power, 1e-12, None)))
     rms = np.sqrt(np.mean(np.square(window), axis=1))
     line_length = np.mean(np.abs(np.diff(window, axis=1)), axis=1)
@@ -396,7 +396,7 @@ def _episode_channel_landmarks(
 ) -> pd.DataFrame:
     read_start = float(episode["anchor_seconds"]) - forecast_config.context_seconds
     read_duration = forecast_config.context_seconds + forecast_config.horizon_seconds
-    data, sample_rate, labels = rsf.read_edf_eeg_segment(
+    data, sample_rate, labels = split_eeg.read_split_eeg_segment(
         episode["edf_path"],
         read_start,
         read_duration,
@@ -449,9 +449,24 @@ def _patient_cache_signature(
     channel_names: Sequence[str],
     forecast_config: rsf.ForecastConfig,
 ) -> dict[str, Any]:
+    split_manifests = []
+    for edf_path in patient_manifest["edf_path"].drop_duplicates():
+        manifest = (
+            split_eeg.split_recording_dir(edf_path) / "channel_manifest.csv"
+        )
+        stat = manifest.stat()
+        split_manifests.append(
+            {
+                "path": str(manifest),
+                "size_bytes": stat.st_size,
+                "mtime_ns": stat.st_mtime_ns,
+            }
+        )
     return {
         "module_version": MODULE_VERSION,
         "rolling_module_version": rsf.MODULE_VERSION,
+        "signal_source": "raw/splitdata",
+        "split_manifests": split_manifests,
         "forecast_config": asdict(forecast_config),
         "episode_ids": patient_manifest["episode_id"].astype(str).tolist(),
         "channel_names": list(channel_names),

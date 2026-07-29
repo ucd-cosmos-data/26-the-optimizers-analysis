@@ -64,7 +64,7 @@ MODEL_FEATURES = [
 
 def _integrate(psd: np.ndarray, freqs: np.ndarray, low: float, high: float) -> np.ndarray:
     mask = (freqs >= low) & (freqs <= high)
-    return np.trapezoid(psd[:, mask], freqs[mask], axis=1)
+    return np.trapz(psd[:, mask], freqs[mask], axis=1)
 
 
 def hjorth_features(data: np.ndarray) -> tuple[np.ndarray, np.ndarray]:

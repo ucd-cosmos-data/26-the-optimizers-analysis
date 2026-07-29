@@ -39,10 +39,14 @@ final_project/
 ├── download_eeg_data.sh              # Downloads and verifies PhysioNet files
 ├── data/
 │   ├── raw/                          # Original EDF recordings; never edited
+│   │   └── splitdata/                # Mirrored per-recording EEG arrays + plots
 │   └── processed/                    # Generated feature and sampled-point tables
 ├── scripts/
 │   ├── analyze_preictal_bandpower.py # Raw EEG → features → summaries
 │   ├── sample_preictal_bandpower.py  # 100 sampled points/seizure → regressions
+│   ├── split_eeg_channels.py         # Every EDF → per-channel arrays + overview
+│   ├── seizure_sensor_selection.py   # Step 1: cohort-level sensor count K only
+│   ├── run_sensor_count_step1.py     # Split-data integration; prints K
 │   └── make_figures.py               # Summaries → four research figures
 └── results/
     ├── raw_data_audit/               # Existing completeness/quality audit
@@ -69,6 +73,21 @@ From the repository root (`26-the-optimizers-analysis`):
 ```powershell
 python final_project/scripts/analyze_preictal_bandpower.py
 python final_project/scripts/make_figures.py
+```
+
+Create the channel-separated source used by the sensor-count workflow:
+
+```powershell
+python final_project/scripts/split_eeg_channels.py
+```
+
+This mirrors all 41 EDF recordings below `data/raw/splitdata`, stores one
+lossless digital array per available EEG channel, and puts all channels for
+each recording on one overview page. Siena recordings contain either 29 or 31
+EEG channels. To overwrite the graphs without deleting them first:
+
+```powershell
+python final_project/scripts/split_eeg_channels.py --plots-only --force-plots
 ```
 
 The first script performs the scientific analysis. The second only turns its

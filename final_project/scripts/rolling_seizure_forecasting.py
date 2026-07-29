@@ -405,65 +405,50 @@ def _micro_window_features(
     )
     window = window[keep]
 
-    rms = np.sqrt(np.mean(np.square(window), axis=1))
-    first_difference = np.diff(window, axis=1)
-    second_difference = np.diff(first_difference, axis=1)
-    line_length = np.mean(np.abs(first_difference), axis=1)
-    channel_median = np.median(window, axis=1, keepdims=True)
-    mad = 1.4826 * np.median(
-        np.abs(window - channel_median), axis=1
+    frequencies, psd = signal.periodogram(
+        window,
+        fs=sample_rate,
+        window="hann",
+        detrend=False,
+        scaling="density",
+        axis=1,
     )
-    robust_range = (
-        np.percentile(window, 95, axis=1)
-        - np.percentile(window, 5, axis=1)
+    analysis_mask = (frequencies >= 0.5) & (frequencies <= 45.0)
+    total_power = np.trapz(
+        psd[:, analysis_mask], frequencies[analysis_mask], axis=1
     )
-    zero_crossing_rate = np.mean(
-        np.signbit(window[:, 1:]) != np.signbit(window[:, :-1]), axis=1
-    )
-    signal_variance = np.var(window, axis=1)
-    first_variance = np.var(first_difference, axis=1)
-    second_variance = np.var(second_difference, axis=1)
-    mobility = np.sqrt(
-        first_variance / np.clip(signal_variance, 1e-12, None)
-    )
-    derivative_mobility = np.sqrt(
-        second_variance / np.clip(first_variance, 1e-12, None)
-    )
-    complexity = derivative_mobility / np.clip(mobility, 1e-12, None)
+    total_power = np.clip(total_power, 1e-12, None)
 
-    channel_features = np.column_stack(
-        [
-            np.log1p(rms),
-            np.log1p(line_length),
-            np.log1p(mad),
-            np.log1p(robust_range),
-            zero_crossing_rate,
-            mobility,
-            complexity,
-        ]
+    relative_values: list[float] = []
+    log_power_values: list[float] = []
+    for low, high in BANDS.values():
+        mask = (frequencies >= low) & (frequencies < high)
+        band_power = np.trapz(psd[:, mask], frequencies[mask], axis=1)
+        band_power = np.clip(band_power, 1e-12, None)
+        relative_values.append(float(np.median(band_power / total_power)))
+        log_power_values.append(float(np.median(np.log10(band_power))))
+
+    rms = np.sqrt(np.mean(np.square(window), axis=1))
+    line_length = np.mean(np.abs(np.diff(window, axis=1)), axis=1)
+    normalized_psd = psd[:, analysis_mask] / np.clip(
+        psd[:, analysis_mask].sum(axis=1, keepdims=True), 1e-12, None
     )
-    distribution_features = np.concatenate(
-        [
-            np.median(channel_features, axis=0),
-            np.percentile(channel_features, 75, axis=0)
-            - np.percentile(channel_features, 25, axis=0),
-            np.percentile(channel_features, 90, axis=0),
-        ]
+    entropy = -np.sum(
+        normalized_psd * np.log(np.clip(normalized_psd, 1e-12, None)), axis=1
     )
-    # Correlation is calculated on a fourfold temporal subsample for speed.
-    # The median absolute off-diagonal value is a robust synchrony descriptor
-    # and contains no frequency-band or FFT information.
-    correlation = np.corrcoef(window[:, ::4])
-    upper = correlation[np.triu_indices_from(correlation, k=1)]
-    finite_upper = np.abs(upper[np.isfinite(upper)])
-    median_correlation = (
-        float(np.median(finite_upper)) if len(finite_upper) else 0.0
+    entropy /= np.log(normalized_psd.shape[1])
+
+    return np.asarray(
+        relative_values
+        + log_power_values
+        + [
+            float(np.median(np.log1p(rms))),
+            float(np.median(np.log1p(line_length))),
+            float(np.median(entropy)),
+            float(keep.sum() / total_channel_count),
+        ],
+        dtype=float,
     )
-    return np.r_[
-        distribution_features,
-        median_correlation,
-        float(keep.sum() / total_channel_count),
-    ].astype(float)
 
 
 def segment_micro_features(

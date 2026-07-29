@@ -1,89 +1,99 @@
-# Personalized EEG sensor selection
+# Step 1: choose the number of sensors
 
-`seizure_sensor_selection.py` selects a compact montage without enumerating all
-`2^31` sensor subsets. It uses greedy forward additions plus one-for-one swap
-refinement, then chooses the smallest `k` on the cross-validated utility plateau.
+`seizure_sensor_selection.py` performs only the first step of the project:
+estimate a single cohort-level sensor count, `K`. It does not produce a
+personalized model, a generalized model, or a sensor combination.
 
-The reported performance is from **nested** grouped cross-validation:
+## Definition of K
 
-- The inner folds select the subset and elbow `k`.
-- The outer folds measure sensitivity, false alarms/hour, mean warning time, and
-  Brier score on data that played no role in selection.
-- After evaluation, the selector runs once on all available data to return the
-  final deployment montage.
+`K` is the smallest count on the performance plateau connected to the
+all-sensor result. A count belongs to that plateau when its held-out,
+subject-level score is statistically non-inferior to the score from all 29
+sensors by the pre-specified margin.
 
-## Expected inputs
+Accuracy versus sensor count should normally be interpreted as a rising curve
+that plateaus, not as a symmetric bell curve. Extra noisy features can sometimes
+reduce held-out accuracy, but the algorithm does not assume that they will.
 
-```python
-X.shape == (n_windows, 31, n_features_per_channel)
-y.shape == (n_windows,)  # 1=preictal, 0=interictal
+## Algorithm
+
+For each outer subject-grouped fold:
+
+1. Hold out complete subjects.
+2. Fit one probability model per sensor on the remaining subjects only.
+3. Build one candidate probability ensemble for every count from 1 through 29
+   using greedy forward search.
+4. Evaluate every count on the held-out subjects.
+5. Give every subject equal weight, regardless of its number of windows.
+
+It then compares each count with the 29-sensor score using paired, one-sided
+non-inferiority confidence bounds. Starting at 28, it walks downward and stops
+at the first count that is meaningfully worse. This yields the left edge of the
+full-sensor plateau.
+
+The forward search examines at most `29 + 28 + ... + 1 = 435` ensembles per
+outer fold, rather than all `2^29` subsets. It fits only one model per sensor per
+fold; combination evaluation averages held-out probabilities and requires no
+additional model fitting. Sensor identities are temporary nuisance variables
+inside training folds and are neither returned nor retained.
+
+## Input
+
+The integrated pipeline reads channel-separated arrays from
+`final_project/data/raw/splitdata`, not directly from EDF during feature
+extraction. Build that mirrored dataset once:
+
+```bash
+python final_project/scripts/split_eeg_channels.py
 ```
 
-Features must remain separated by channel. For example, if you compute bandpower,
-entropy, and line length per channel, the final axis contains those features.
-
-`groups` should identify independent recordings or sessions. If a recording
-contains one seizure, its seizure ID is also suitable. Never randomly split
-overlapping windows.
-
-## Integration
+Each recording directory contains one lossless `.npy` file per available EEG
+channel, `channel_manifest.csv`, and `channel_overview.png`. The raw recordings
+have 29 or 31 EEG channels; the cohort intersection used below remains 29.
 
 ```python
-from seizure_sensor_selection import PersonalizedSensorSelector
+X.shape == (n_windows, 29, n_features_per_sensor)
+y.shape == (n_windows,)          # binary target
+subjects.shape == (n_windows,)   # one of the 14 subject IDs
+```
 
-metadata = {
-    # Use the window stride, not window width, for overlapping windows.
-    "duration_hours": np.full(len(y_patient), window_stride_seconds / 3600),
-    # Unique event ID on preictal windows; -1 on interictal windows.
-    "seizure_ids": seizure_id_per_window,
-    # Minutes until onset on preictal windows; NaN on interictal windows.
-    "time_to_seizure_minutes": minutes_to_onset,
-    # Optional but recommended: time within each recording.
-    "window_start_minutes": window_start_minutes,
-}
+All subjects must share the same ordered sensor axis. Features must remain
+separated by sensor. Each subject must contain both target classes so that the
+subject-level score is defined.
 
-selector = PersonalizedSensorSelector(
-    estimator=your_probability_model,  # must implement fit + predict_proba
-    max_sensors=31,
+## Run
+
+```python
+from seizure_sensor_selection import select_sensor_count
+
+K = select_sensor_count(
+    X_all_subjects,
+    y_all_subjects,
+    subjects=subject_id_per_window,
+    scoring="average_precision",
+    noninferiority_margin=0.02,
+    confidence=0.95,
     inner_splits=4,
-    outer_splits=5,
-    threshold=0.5,
-    refractory_minutes=30,
-    elbow_tolerance=0.02,
+    outer_splits=None,  # leave one subject out: 14 folds for 14 subjects
+    n_jobs=-1,
+    random_state=42,
 )
 
-result = selector.fit_select(
-    X_patient,
-    y_patient,
-    metadata=metadata,
-    groups=recording_id_per_window,
-    sensor_names=channel_names,
-    plot_path="patient_07_sensor_curve.png",
-)
-
-print(result.selected_sensor_indices)
-print(result.selected_sensor_names)
-print(result.summary())
-result.figure.show()
+print(K)
 ```
 
-To personalize, run this independently for each patient. For the one-size-fits-all
-comparison, concatenate patients and run a global selector while grouping by a
-compound patient/recording ID. Report macro-averaged patient metrics, not a
-window-weighted average. `compare_personalized_with_global` produces a compact
-summary after both evaluations.
+For the downloaded Siena data, the end-to-end reproducible command is:
 
-## Metric definitions
+```bash
+python final_project/scripts/split_eeg_channels.py
+python final_project/scripts/run_sensor_count_step1.py
+```
 
-- **Sensitivity:** fraction of seizure events with at least one alarm in their
-  preictal window.
-- **False alarms/hour:** distinct interictal alarm episodes divided by interictal
-  monitoring hours. Positives within the refractory interval count once.
-- **Mean warning time:** mean time from the earliest correct alarm to onset,
-  across detected seizures.
-- **Brier score:** mean squared probability error over all held-out windows.
+This prints one integer and nothing about which sensors were used. The later
+personalized and generalized steps should accept this integer as their fixed
+target count.
 
-The default scalar utility keeps sensitivity dominant while penalizing false
-alarms and Brier score and lightly rewarding earlier warnings. Its weights are
-explicit in `default_utility`; pre-register them or replace `utility_fn` with a
-clinically chosen objective before analyzing test results.
+Choose `noninferiority_margin` before running the analysis. A value of `0.02`
+means that a reduced count may lose no more than two absolute
+average-precision points relative to all sensors. A clinically meaningful
+margin should replace this example value when one is available.
