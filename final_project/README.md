@@ -39,10 +39,14 @@ final_project/
 ├── download_eeg_data.sh              # Downloads and verifies PhysioNet files
 ├── data/
 │   ├── raw/                          # Original EDF recordings; never edited
+│   │   └── splitdata/                # Mirrored per-recording EEG arrays + plots
 │   └── processed/                    # Generated feature and sampled-point tables
 ├── scripts/
 │   ├── analyze_preictal_bandpower.py # Raw EEG → features → summaries
 │   ├── sample_preictal_bandpower.py  # 100 sampled points/seizure → regressions
+│   ├── split_eeg_channels.py         # Every EDF → per-channel arrays + overview
+│   ├── seizure_sensor_selection.py   # Step 1: cohort-level sensor count K only
+│   ├── run_sensor_count_step1.py     # Split-data integration; prints K
 │   └── make_figures.py               # Summaries → four research figures
 └── results/
     ├── raw_data_audit/               # Existing completeness/quality audit
@@ -58,8 +62,9 @@ final_project/
     └── figures/                      # Report-ready plots
 ```
 
-`data/raw` and `data/processed` are ignored by Git because they are large.
-Small result tables and final figures are kept so collaborators can inspect the
+`data/raw` and `data/processed` are ignored by Git because they are large,
+except for the per-recording `splitdata/**/channel_overview.png` graphs. Small
+result tables and final figures are also kept so collaborators can inspect the
 findings without downloading all EEG files.
 
 ## Run the pipeline
@@ -70,6 +75,50 @@ From the repository root (`26-the-optimizers-analysis`):
 python final_project/scripts/analyze_preictal_bandpower.py
 python final_project/scripts/make_figures.py
 ```
+
+Create the channel-separated source used by the sensor-count workflow:
+
+```powershell
+python final_project/scripts/split_eeg_channels.py
+```
+
+This mirrors all 41 EDF recordings below `data/raw/splitdata`, stores one
+lossless digital array per available EEG channel, and puts all channels for
+each recording on one overview page. Siena recordings contain either 29 or 31
+EEG channels. To overwrite the graphs without deleting them first:
+
+```powershell
+python final_project/scripts/split_eeg_channels.py --plots-only --force-plots
+```
+
+## Cohort sensor-count selection (Step 1)
+
+This step estimates only the number of sensors, `K`; it does not choose the
+final sensor identities or train personalized/generalized models. It uses the
+29 EEG channels shared by all 14 subjects. Each sensor is represented by 24
+compact features at five-second landmarks, with the target defined as seizure
+onset within the next five minutes.
+
+The current cohort uses four interictal controls per seizure: 47 preictal
+episodes and 188 controls, or 14,100 landmark rows. A class-balanced logistic
+model is fitted separately for each sensor. Greedy search forms candidate
+K-sensor ensembles by averaging sensor probabilities, and leave-one-subject-out
+validation evaluates them using average precision. The output is the smallest
+count statistically non-inferior to the full 29-sensor baseline. No neural
+network is used, and temporary sensor identities are discarded.
+
+Run the current calculation with:
+
+```powershell
+python final_project/scripts/run_sensor_count_step1.py
+```
+
+With the current `0.02` non-inferiority margin, the executed notebook returns
+`K = 4`. Both the control ratio and margin must be fixed before analysis:
+average precision depends on class prevalence, so changing either setting can
+change the plateau and K even when the underlying EEG signals are unchanged.
+See [SENSOR_SELECTION_USAGE.md](scripts/SENSOR_SELECTION_USAGE.md) for the
+complete algorithm and input specification.
 
 The first script performs the scientific analysis. The second only turns its
 summary tables into figures, so it must run second.

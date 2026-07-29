@@ -38,6 +38,12 @@ final_project/data/processed/**
 !final_project/data/interim/.gitkeep
 !final_project/data/processed/.gitkeep
 
+# Share only the generated channel overview graphs.
+!final_project/data/raw/splitdata/
+final_project/data/raw/splitdata/**
+!final_project/data/raw/splitdata/**/
+!final_project/data/raw/splitdata/**/channel_overview.png
+
 !group_survey/data/raw/*
 !group_survey/data/interim/*
 !mini1/data/raw/data.csv
