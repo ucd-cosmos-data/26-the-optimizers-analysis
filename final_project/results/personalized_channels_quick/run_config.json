@@ -10,6 +10,7 @@
     "max_leaf_nodes": 15,
     "min_eeg_channels": 8,
     "min_samples_leaf": 80,
+    "pre_onset_seconds": 300,
     "random_seed": 42,
     "target_sample_rate": 128,
     "test_fraction": 0.2,
@@ -20,9 +21,9 @@
     "force_rebuild_features": false,
     "k": 4,
     "max_patients": 1,
-    "max_threshold_folds": 4,
+    "max_threshold_folds": 2,
     "patient_ids": [
-      "PN10"
+      "PN05"
     ],
     "quick_mode": true,
     "random_baseline_repeats": 1,
