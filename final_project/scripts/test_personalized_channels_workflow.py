@@ -9,10 +9,11 @@ def _synthetic_landmarks(n_events: int = 3) -> tuple[pd.DataFrame, dict[str, lis
     rng = np.random.default_rng(7)
     rows = []
     channel_map = {"A": ["a1", "a2"], "B": ["b1", "b2"]}
+    n_bins = rsf.ForecastConfig().n_bins
     for event in range(n_events):
         for episode_type in ("preictal", "interictal"):
             positive = episode_type == "preictal"
-            for step in range(rsf.N_BINS):
+            for step in range(n_bins):
                 rows.append(
                     {
                         "patient_id": "PX",
@@ -27,7 +28,7 @@ def _synthetic_landmarks(n_events: int = 3) -> tuple[pd.DataFrame, dict[str, lis
                             if positive
                             else np.nan
                         ),
-                        "event_bin": rsf.N_BINS - step - 1 if positive else -1,
+                        "event_bin": n_bins - step - 1 if positive else -1,
                         "has_event_in_5m": int(positive),
                         "a1": float(positive) * 3 + rng.normal(scale=0.2),
                         "a2": rng.normal(scale=0.2),
@@ -58,6 +59,41 @@ def test_chronological_split_keeps_matched_pairs_together():
     assert details["n_test_seizures"] == 1
     assert set(train["source_event_id"]) == {"E1", "E2"}
     assert set(test["source_event_id"]) == {"E3"}
+
+
+def test_chronological_split_keeps_multiple_controls_per_seizure():
+    rows = []
+    for event_number, event in enumerate(("E1", "E2", "E3"), start=1):
+        rows.append(
+            {
+                "patient_id": "PX",
+                "source_event_id": event,
+                "episode_id": f"{event}_preictal",
+                "episode_type": "preictal",
+                "recording": f"R{event_number}",
+                "event_onset_seconds": 100.0,
+            }
+        )
+        rows.extend(
+            {
+                "patient_id": "PX",
+                "source_event_id": event,
+                "episode_id": f"{event}_interictal_{control}",
+                "episode_type": "interictal",
+                "recording": f"R{event_number}",
+                "event_onset_seconds": np.nan,
+            }
+            for control in range(4)
+        )
+    manifest = pd.DataFrame(rows)
+    train, test, _ = pc.chronological_event_split(manifest)
+
+    assert set(train["source_event_id"]) == {"E1", "E2"}
+    assert set(test["source_event_id"]) == {"E3"}
+    assert test["episode_type"].value_counts().to_dict() == {
+        "interictal": 4,
+        "preictal": 1,
+    }
 
 
 def test_fixed_k_selection_and_hazard_evaluation():

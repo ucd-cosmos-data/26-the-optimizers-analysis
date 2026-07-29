@@ -38,8 +38,22 @@ import rolling_seizure_forecasting as rsf
 import split_eeg_channels as split_eeg
 
 
-MODULE_VERSION = "3.0.0"
-PER_CHANNEL_FEATURE_NAMES = tuple(rsf.MICRO_FEATURE_NAMES)
+MODULE_VERSION = "3.1.0"
+BANDS = {
+    "delta": (0.5, 4.0),
+    "theta": (4.0, 8.0),
+    "alpha": (8.0, 13.0),
+    "beta": (13.0, 30.0),
+    "low_gamma": (30.0, 45.0),
+}
+PER_CHANNEL_FEATURE_NAMES = (
+    *(f"relative_{band}" for band in BANDS),
+    *(f"log_power_{band}" for band in BANDS),
+    "log_rms",
+    "log_line_length",
+    "spectral_entropy",
+    "usable_channel_fraction",
+)
 AGGREGATIONS = tuple(rsf.AGGREGATIONS)
 COMPACT_FEATURE_NAMES = (
     "relative_delta",
@@ -155,10 +169,10 @@ def load_manifest(paths: dict[str, Path], forecast_config: rsf.ForecastConfig) -
         str(rsf._resolve_edf(paths["raw"], row.patient_id, row.recording))
         for row in manifest.itertuples()
     ]
-    # The reference manifest constructs an equal number of interictal controls
-    # per patient but leaves their source_event_id blank. Pair controls by their
-    # deterministic sequence with chronologically ordered seizures so a control
-    # always follows the corresponding seizure into train or test.
+    # The rolling manifest may construct multiple interictal controls per
+    # seizure and leaves their source_event_id blank. Distribute every control
+    # as evenly as possible across chronologically ordered seizures so all
+    # controls follow a deterministic source seizure into train or test.
     for patient_id, group in manifest.groupby("patient_id", sort=False):
         positive = group.loc[group["episode_type"].eq("preictal")].copy()
         positive["_recording_key"] = positive["recording"].map(
@@ -172,12 +186,24 @@ def load_manifest(paths: dict[str, Path], forecast_config: rsf.ForecastConfig) -
             .sort_values("episode_id")
             .index
         )
-        event_ids = positive["source_event_id"].astype(str).tolist()
-        if len(negative_indices) != len(event_ids):
+        event_ids = (
+            positive["source_event_id"].astype(str).drop_duplicates().tolist()
+        )
+        if len(negative_indices) and not event_ids:
             raise ValueError(
-                f"{patient_id} has unequal seizure and interictal episode counts."
+                f"{patient_id} has interictal controls but no preictal episodes."
             )
-        manifest.loc[negative_indices, "source_event_id"] = event_ids
+        controls_per_event, remainder = divmod(
+            len(negative_indices), len(event_ids) or 1
+        )
+        assignments = [
+            event_id
+            for event_number, event_id in enumerate(event_ids)
+            for _ in range(
+                controls_per_event + int(event_number < remainder)
+            )
+        ]
+        manifest.loc[negative_indices, "source_event_id"] = assignments
     return manifest.reset_index(drop=True)
 
 
@@ -276,12 +302,12 @@ def _per_channel_micro_features(
     total_power = np.trapz(psd[:, analysis], frequencies[analysis], axis=1)
     total_power = np.clip(total_power, 1e-12, None)
     columns: list[np.ndarray] = []
-    for low, high in rsf.BANDS.values():
+    for low, high in BANDS.values():
         mask = (frequencies >= low) & (frequencies < high)
         band_power = np.trapz(psd[:, mask], frequencies[mask], axis=1)
         band_power = np.clip(band_power, 1e-12, None)
         columns.append(band_power / total_power)
-    for low, high in rsf.BANDS.values():
+    for low, high in BANDS.values():
         mask = (frequencies >= low) & (frequencies < high)
         band_power = np.trapz(psd[:, mask], frequencies[mask], axis=1)
         columns.append(np.log10(np.clip(band_power, 1e-12, None)))
@@ -315,7 +341,7 @@ def _segment_channel_features(
 ) -> np.ndarray:
     """Return ``(micro_windows, channels, per_channel_features)``."""
 
-    if source_sample_rate <= 2 * max(high for _, high in rsf.BANDS.values()):
+    if source_sample_rate <= 2 * max(high for _, high in BANDS.values()):
         raise ValueError("Source sample rate is too low for the configured bands.")
     rounded_rate = int(round(source_sample_rate))
     gcd = math.gcd(rounded_rate, forecast_config.target_sample_rate)
@@ -338,18 +364,25 @@ def _segment_channel_features(
     )
 
 
-def _aggregate_channel_context(micro: np.ndarray) -> np.ndarray:
+def _aggregate_channel_context(
+    micro: np.ndarray,
+    *,
+    expected_windows: int,
+    bin_seconds: int,
+) -> np.ndarray:
     """Aggregate context as mean/std/latest/slope for every channel."""
 
-    expected = rsf.MICRO_WINDOWS_PER_CONTEXT
-    if micro.shape[0] != expected:
-        raise ValueError(f"Expected {expected} context windows, found {micro.shape[0]}.")
+    if micro.shape[0] != expected_windows:
+        raise ValueError(
+            f"Expected {expected_windows} context windows, "
+            f"found {micro.shape[0]}."
+        )
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", category=RuntimeWarning)
         means = np.nanmean(micro, axis=0)
         stds = np.nanstd(micro, axis=0)
         latest = micro[-1]
-        times = np.arange(expected, dtype=float) * rsf.BIN_SECONDS
+        times = np.arange(expected_windows, dtype=float) * bin_seconds
         centered = times - times.mean()
         slopes = np.nansum(
             centered[:, None, None] * (micro - means[None, :, :]), axis=0
@@ -417,9 +450,16 @@ def _episode_channel_landmarks(
     feature_columns = [column for name in channel_names for column in column_map[name]]
     is_event = episode["episode_type"] == "preictal"
     rows: list[dict[str, Any]] = []
-    for step in range(rsf.N_BINS):
-        context = micro[step : step + rsf.MICRO_WINDOWS_PER_CONTEXT]
-        features = _aggregate_channel_context(context).reshape(-1)
+    context_windows = (
+        forecast_config.context_seconds // forecast_config.bin_seconds
+    )
+    for step in range(forecast_config.n_bins):
+        context = micro[step : step + context_windows]
+        features = _aggregate_channel_context(
+            context,
+            expected_windows=context_windows,
+            bin_seconds=forecast_config.bin_seconds,
+        ).reshape(-1)
         landmark = float(episode["anchor_seconds"]) + step * forecast_config.bin_seconds
         if is_event:
             time_to_event = float(episode["event_onset_seconds"]) - landmark
@@ -696,11 +736,14 @@ def select_fixed_k_channels(
 def _make_person_period(
     landmarks: pd.DataFrame,
     feature_columns: Sequence[str],
+    forecast_config: rsf.ForecastConfig,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     base = landmarks[list(feature_columns)].to_numpy(dtype=float)
     event_bins = landmarks["event_bin"].to_numpy(dtype=int)
     has_event = landmarks["has_event_in_5m"].to_numpy(dtype=bool)
-    counts = np.where(has_event, event_bins + 1, rsf.N_BINS).astype(int)
+    counts = np.where(
+        has_event, event_bins + 1, forecast_config.n_bins
+    ).astype(int)
     total = int(counts.sum())
     x = np.empty((total, len(feature_columns) + 3), dtype=np.float32)
     y = np.zeros(total, dtype=np.uint8)
@@ -717,8 +760,10 @@ def _make_person_period(
         x[cursor:stop, : len(feature_columns)] = base[row_index]
         lead = np.arange(count, dtype=float)
         x[cursor:stop, -3] = lead
-        x[cursor:stop, -2] = (lead + 0.5) / rsf.N_BINS
-        x[cursor:stop, -1] = np.log1p((lead + 0.5) * rsf.BIN_SECONDS)
+        x[cursor:stop, -2] = (lead + 0.5) / forecast_config.n_bins
+        x[cursor:stop, -1] = np.log1p(
+            (lead + 0.5) * forecast_config.bin_seconds
+        )
         if has_event[row_index]:
             y[stop - 1] = 1
         weights[cursor:stop] = 1.0 / episode_totals[row_index]
@@ -732,7 +777,9 @@ def fit_hazard_model(
     feature_columns: Sequence[str],
     forecast_config: rsf.ForecastConfig,
 ) -> HistGradientBoostingClassifier:
-    x, y, weights = _make_person_period(train, feature_columns)
+    x, y, weights = _make_person_period(
+        train, feature_columns, forecast_config
+    )
     model = HistGradientBoostingClassifier(
         loss="log_loss",
         learning_rate=forecast_config.learning_rate,
@@ -755,18 +802,26 @@ def predict_horizon_distribution(
     model: HistGradientBoostingClassifier,
     frame: pd.DataFrame,
     feature_columns: Sequence[str],
+    forecast_config: rsf.ForecastConfig,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     base = frame[list(feature_columns)].to_numpy(dtype=float)
     n = len(base)
-    repeated = np.repeat(base, rsf.N_BINS, axis=0).astype(np.float32)
-    lead = np.tile(np.arange(rsf.N_BINS, dtype=float), n)
-    x = np.empty((n * rsf.N_BINS, len(feature_columns) + 3), dtype=np.float32)
+    repeated = np.repeat(base, forecast_config.n_bins, axis=0).astype(
+        np.float32
+    )
+    lead = np.tile(np.arange(forecast_config.n_bins, dtype=float), n)
+    x = np.empty(
+        (n * forecast_config.n_bins, len(feature_columns) + 3),
+        dtype=np.float32,
+    )
     x[:, : len(feature_columns)] = repeated
     x[:, -3] = lead
-    x[:, -2] = (lead + 0.5) / rsf.N_BINS
-    x[:, -1] = np.log1p((lead + 0.5) * rsf.BIN_SECONDS)
+    x[:, -2] = (lead + 0.5) / forecast_config.n_bins
+    x[:, -1] = np.log1p((lead + 0.5) * forecast_config.bin_seconds)
     hazards = np.clip(
-        model.predict_proba(x)[:, 1].reshape(n, rsf.N_BINS), 1e-7, 1 - 1e-7
+        model.predict_proba(x)[:, 1].reshape(n, forecast_config.n_bins),
+        1e-7,
+        1 - 1e-7,
     )
     survival_before = np.concatenate(
         [np.ones((n, 1)), np.cumprod(1.0 - hazards[:, :-1], axis=1)], axis=1
@@ -824,7 +879,10 @@ def _oof_hazard_risk(
             train.iloc[fit_index], feature_columns, forecast_config
         )
         _, _, no_event = predict_horizon_distribution(
-            fold_model, train.iloc[valid_index], feature_columns
+            fold_model,
+            train.iloc[valid_index],
+            feature_columns,
+            forecast_config,
         )
         frames.append(train.iloc[valid_index].copy())
         risks.append(1.0 - no_event)
@@ -960,7 +1018,7 @@ def evaluate_model(
         raw_threshold_risk = np.asarray([], dtype=float)
     if threshold_frame.empty:
         _, _, train_no_event = predict_horizon_distribution(
-            model, train, feature_columns
+            model, train, feature_columns, forecast_config
         )
         threshold_frame = train
         raw_threshold_risk = 1.0 - train_no_event
@@ -978,7 +1036,7 @@ def evaluate_model(
         forecast_config.warning_time_target,
     )
     _, raw_pmf, raw_no_event = predict_horizon_distribution(
-        model, test, feature_columns
+        model, test, feature_columns, forecast_config
     )
     pmf, no_event, risk = _calibrate_distribution(
         raw_pmf, raw_no_event, calibrator
