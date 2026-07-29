@@ -142,3 +142,41 @@ one person are related observations. The summaries therefore average within
 each patient before estimating the group time course. Findings should be
 described as exploratory and should not be generalized to clinical seizure
 prediction.
+
+## Rolling seizure-forecasting notebook
+
+`scripts/rolling_seizure_forecasting.ipynb` is a separate, EDF-based
+time-to-event forecasting experiment. It uses a fixed two-minute causal EEG
+context and, at each five-second landmark, produces a probability distribution
+over configurable future onset bins plus an explicit no-onset outcome. Its
+features are time-domain signal descriptors only; it does not use the
+band-power features described above.
+
+The notebook uses the requested seizure allocation (35 train, 4 validation,
+8 test) and four seizure-free interictal episodes per seizure. It fits a
+two-stage model: an Extra Trees nonlinear horizon-risk classifier and a
+regularized logistic discrete-time survival model for onset-bin timing. The
+time-domain features retain robust across-channel dispersion and synchrony;
+they still contain no frequency-band powers or FFT features. The operational
+alarm is deliberately more conservative than a raw threshold: it turns on
+only after two consecutive high-risk readings and stays on until 13
+consecutive low-risk five-second readings (65 seconds) occur.
+
+Run it from `final_project/scripts` with the project virtual environment:
+
+```powershell
+..\..\.venv\Scripts\python.exe -m jupyter nbconvert --to notebook --execute --inplace rolling_seizure_forecasting.ipynb
+```
+
+At the bottom of the executed notebook, the final held-out dashboard displays
+sensitivity, continuous-risk AUROC, false alarms per hour, and a clearly
+labeled landmark-level confusion matrix. The same panel is saved as
+`results/rolling_forecast/test_alarm_dashboard.png`; its numerical summary is
+saved as `test_alarm_dashboard_metrics.csv`.
+
+The operating threshold is selected on development data to prioritize at
+least 90% seizure sensitivity, then minimize false alarms among qualifying
+thresholds. This is a tradeoff, not a guaranteed clinical performance level.
+With only 47 seizures and 14 patients, AUROC and false-alarm estimates are
+high-variance; the test set must not be repeatedly tuned against and a new
+locked external cohort is required for an unbiased final claim.

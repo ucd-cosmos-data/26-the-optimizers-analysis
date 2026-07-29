@@ -7,6 +7,9 @@ into the future using bins of length ``i``. A discrete hazard model produces an
 internally consistent distribution over the future bins plus a separate
 ``no seizure in the configured horizon`` outcome.
 
+The current feature path is deliberately time-domain only. It does not compute
+delta/theta/alpha/beta/gamma band powers or any FFT-based spectral features.
+
 The implementation is an exploratory research model, not a medical device.
 """
 
@@ -15,6 +18,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Iterable
+from concurrent.futures import ThreadPoolExecutor
 import json
 import math
 import time
@@ -25,41 +29,47 @@ import numpy as np
 import pandas as pd
 import pyedflib
 from scipy import signal
-from sklearn.ensemble import HistGradientBoostingClassifier
+from sklearn.linear_model import SGDClassifier
+from sklearn.ensemble import ExtraTreesClassifier
+from sklearn.exceptions import ConvergenceWarning
 from sklearn.metrics import average_precision_score, roc_auc_score
 from sklearn.model_selection import GroupShuffleSplit
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import StandardScaler
 
 
-MODULE_VERSION = "3.1.0"
-FEATURE_CACHE_VERSION = "2.0.0"
+MODULE_VERSION = "6.1.0"
+FEATURE_CACHE_VERSION = "6.0.0"
 BIN_SECONDS = 5
 HORIZON_SECONDS = 300
 CONTEXT_SECONDS = 120
 PRE_ONSET_SECONDS = 300
-N_BINS = HORIZON_SECONDS // BIN_SECONDS
-MICRO_WINDOWS_PER_CONTEXT = CONTEXT_SECONDS // BIN_SECONDS
 INTERICTAL_BUFFER_SECONDS = 300
-TARGET_SAMPLE_RATE = 128
+TARGET_SAMPLE_RATE = 64
 RANDOM_SEED = 42
 MIN_EEG_CHANNELS = 8
 
-BANDS: dict[str, tuple[float, float]] = {
-    "delta": (0.5, 4.0),
-    "theta": (4.0, 8.0),
-    "alpha": (8.0, 13.0),
-    "beta": (13.0, 30.0),
-    "low_gamma": (30.0, 45.0),
-}
-
-MICRO_FEATURE_NAMES = (
-    [f"relative_{name}" for name in BANDS]
-    + [f"log_power_{name}" for name in BANDS]
-    + [
-        "log_rms",
-        "log_line_length",
-        "spectral_entropy",
-        "usable_channel_fraction",
-    ]
+CHANNEL_BASE_FEATURE_NAMES = (
+    "log_rms",
+    "log_line_length",
+    "log_mad",
+    "log_robust_range",
+    "zero_crossing_rate",
+    "hjorth_mobility",
+    "hjorth_complexity",
+)
+CHANNEL_DISTRIBUTION_NAMES = (
+    "median",
+    "channel_iqr",
+    "channel_p90",
+)
+MICRO_FEATURE_NAMES = tuple(
+    base if statistic == "median" else f"{base}_{statistic}"
+    for statistic in CHANNEL_DISTRIBUTION_NAMES
+    for base in CHANNEL_BASE_FEATURE_NAMES
+) + (
+    "median_absolute_channel_correlation",
+    "usable_channel_fraction",
 )
 
 AGGREGATIONS = ("mean", "std", "last", "slope")
@@ -115,11 +125,17 @@ class ForecastConfig:
     random_seed: int = RANDOM_SEED
     test_fraction: float = 0.25
     warning_time_target: float = 0.25
+    minimum_development_sensitivity: float = 0.90
+    interictal_controls_per_seizure: int = 4
+    alarm_on_consecutive: int = 2
+    # At five-second landmarks, 13 low-risk readings are 65 seconds: strictly
+    # more than one minute, as requested.
+    alarm_off_consecutive: int = 13
     max_iter: int = 120
     learning_rate: float = 0.07
     max_leaf_nodes: int = 15
     min_samples_leaf: int = 80
-    l2_regularization: float = 1.0
+    l2_regularization: float = 1e-4
 
     @property
     def n_bins(self) -> int:
@@ -144,6 +160,10 @@ class ForecastConfig:
     def validate(self) -> None:
         if self.bin_seconds <= 0:
             raise ValueError("bin_seconds must be positive.")
+        if self.horizon_seconds <= 0:
+            raise ValueError("horizon_seconds must be positive.")
+        if self.context_seconds <= 0:
+            raise ValueError("context_seconds must be positive.")
         if self.horizon_seconds % self.bin_seconds:
             raise ValueError("horizon_seconds must be divisible by bin_seconds.")
         if self.context_seconds % self.bin_seconds:
@@ -156,10 +176,42 @@ class ForecastConfig:
             raise ValueError(
                 "This experiment requires exactly 120 seconds of past EEG context."
             )
+        if self.context_bins < 2:
+            raise ValueError(
+                "The two-minute context must contain at least two intervals."
+            )
+        if self.target_sample_rate < 32:
+            raise ValueError(
+                "target_sample_rate must be at least 32 Hz for time-domain features."
+            )
+        if self.min_eeg_channels <= 0:
+            raise ValueError("min_eeg_channels must be positive.")
+        if self.max_iter <= 0:
+            raise ValueError("max_iter must be positive.")
         if not 0 < self.test_fraction < 1:
             raise ValueError("test_fraction must be in (0, 1).")
         if not 0 <= self.warning_time_target <= 1:
             raise ValueError("warning_time_target must be in [0, 1].")
+        if not 0 <= self.minimum_development_sensitivity <= 1:
+            raise ValueError(
+                "minimum_development_sensitivity must be in [0, 1]."
+            )
+        if self.interictal_controls_per_seizure <= 0:
+            raise ValueError("interictal_controls_per_seizure must be positive.")
+        if self.alarm_on_consecutive <= 0:
+            raise ValueError("alarm_on_consecutive must be positive.")
+        if self.alarm_off_consecutive <= 0:
+            raise ValueError("alarm_off_consecutive must be positive.")
+
+
+@dataclass
+class TwoStageForecastModel:
+    """Nonlinear horizon-risk model plus a discrete-hazard timing model."""
+
+    timing_model: Any
+    risk_model: Any
+    risk_feature_columns: tuple[str, ...]
+    smoothing_alpha: float = 0.10
 
 
 def project_paths(start: str | Path | None = None) -> dict[str, Path]:
@@ -340,61 +392,78 @@ def _micro_window_features(
     total_channel_count: int,
     min_channels: int,
 ) -> np.ndarray:
-    """Calculate robust spectral and signal features for one five-second bin."""
+    """Calculate fast robust time-domain features for one EEG interval."""
 
-    window = signal.detrend(window, axis=1, type="linear")
+    # Median centering is substantially faster and less outlier-sensitive than
+    # fitting a linear trend independently in every channel and interval.
+    window = window - np.nanmedian(window, axis=1, keepdims=True)
     window = window - np.nanmedian(window, axis=0, keepdims=True)
     keep = _quality_mask(window)
     if int(keep.sum()) < min_channels:
         raise ValueError(
-            f"Only {int(keep.sum())} usable EEG channels in a {BIN_SECONDS}-s window."
-        )
+            f"Only {int(keep.sum())} usable EEG channels in the configured window."
+    )
     window = window[keep]
 
-    frequencies, psd = signal.periodogram(
-        window,
-        fs=sample_rate,
-        window="hann",
-        detrend=False,
-        scaling="density",
-        axis=1,
-    )
-    analysis_mask = (frequencies >= 0.5) & (frequencies <= 45.0)
-    total_power = np.trapezoid(
-        psd[:, analysis_mask], frequencies[analysis_mask], axis=1
-    )
-    total_power = np.clip(total_power, 1e-12, None)
-
-    relative_values: list[float] = []
-    log_power_values: list[float] = []
-    for low, high in BANDS.values():
-        mask = (frequencies >= low) & (frequencies < high)
-        band_power = np.trapezoid(psd[:, mask], frequencies[mask], axis=1)
-        band_power = np.clip(band_power, 1e-12, None)
-        relative_values.append(float(np.median(band_power / total_power)))
-        log_power_values.append(float(np.median(np.log10(band_power))))
-
     rms = np.sqrt(np.mean(np.square(window), axis=1))
-    line_length = np.mean(np.abs(np.diff(window, axis=1)), axis=1)
-    normalized_psd = psd[:, analysis_mask] / np.clip(
-        psd[:, analysis_mask].sum(axis=1, keepdims=True), 1e-12, None
+    first_difference = np.diff(window, axis=1)
+    second_difference = np.diff(first_difference, axis=1)
+    line_length = np.mean(np.abs(first_difference), axis=1)
+    channel_median = np.median(window, axis=1, keepdims=True)
+    mad = 1.4826 * np.median(
+        np.abs(window - channel_median), axis=1
     )
-    entropy = -np.sum(
-        normalized_psd * np.log(np.clip(normalized_psd, 1e-12, None)), axis=1
+    robust_range = (
+        np.percentile(window, 95, axis=1)
+        - np.percentile(window, 5, axis=1)
     )
-    entropy /= np.log(normalized_psd.shape[1])
+    zero_crossing_rate = np.mean(
+        np.signbit(window[:, 1:]) != np.signbit(window[:, :-1]), axis=1
+    )
+    signal_variance = np.var(window, axis=1)
+    first_variance = np.var(first_difference, axis=1)
+    second_variance = np.var(second_difference, axis=1)
+    mobility = np.sqrt(
+        first_variance / np.clip(signal_variance, 1e-12, None)
+    )
+    derivative_mobility = np.sqrt(
+        second_variance / np.clip(first_variance, 1e-12, None)
+    )
+    complexity = derivative_mobility / np.clip(mobility, 1e-12, None)
 
-    return np.asarray(
-        relative_values
-        + log_power_values
-        + [
-            float(np.median(np.log1p(rms))),
-            float(np.median(np.log1p(line_length))),
-            float(np.median(entropy)),
-            float(keep.sum() / total_channel_count),
-        ],
-        dtype=float,
+    channel_features = np.column_stack(
+        [
+            np.log1p(rms),
+            np.log1p(line_length),
+            np.log1p(mad),
+            np.log1p(robust_range),
+            zero_crossing_rate,
+            mobility,
+            complexity,
+        ]
     )
+    distribution_features = np.concatenate(
+        [
+            np.median(channel_features, axis=0),
+            np.percentile(channel_features, 75, axis=0)
+            - np.percentile(channel_features, 25, axis=0),
+            np.percentile(channel_features, 90, axis=0),
+        ]
+    )
+    # Correlation is calculated on a fourfold temporal subsample for speed.
+    # The median absolute off-diagonal value is a robust synchrony descriptor
+    # and contains no frequency-band or FFT information.
+    correlation = np.corrcoef(window[:, ::4])
+    upper = correlation[np.triu_indices_from(correlation, k=1)]
+    finite_upper = np.abs(upper[np.isfinite(upper)])
+    median_correlation = (
+        float(np.median(finite_upper)) if len(finite_upper) else 0.0
+    )
+    return np.r_[
+        distribution_features,
+        median_correlation,
+        float(keep.sum() / total_channel_count),
+    ].astype(float)
 
 
 def segment_micro_features(
@@ -407,8 +476,10 @@ def segment_micro_features(
     config.validate()
     if data.ndim != 2:
         raise ValueError("EEG data must have shape (channels, samples).")
-    if source_sample_rate <= 2 * max(high for _, high in BANDS.values()):
-        raise ValueError("Source sample rate is too low for the configured bands.")
+    if source_sample_rate < config.target_sample_rate:
+        raise ValueError(
+            "Source sample rate is below the configured target sample rate."
+        )
 
     gcd = math.gcd(int(round(source_sample_rate)), config.target_sample_rate)
     up = config.target_sample_rate // gcd
@@ -597,7 +668,7 @@ def build_episode_manifest(
                 "Reduce the buffer only if scientifically justified."
             )
 
-        needed = len(patient_positives)
+        needed = len(patient_positives) * config.interictal_controls_per_seizure
         candidate_frame = pd.DataFrame(candidates).drop_duplicates(
             ["edf_path", "anchor_seconds"]
         )
@@ -635,8 +706,9 @@ def build_episode_manifest(
         [positives, pd.DataFrame(negative_rows)], ignore_index=True
     ).sort_values(["patient_id", "episode_type", "episode_id"])
     counts = manifest.groupby(["patient_id", "episode_type"]).size().unstack(fill_value=0)
-    if not (counts["preictal"] == counts["interictal"]).all():
-        raise AssertionError("Positive and interictal episode counts are not matched.")
+    expected_controls = counts["preictal"] * config.interictal_controls_per_seizure
+    if not (counts["interictal"] == expected_controls).all():
+        raise AssertionError("Interictal episode counts do not match the configured ratio.")
     return manifest.reset_index(drop=True)
 
 
@@ -644,8 +716,9 @@ def assign_requested_splits(
     manifest: pd.DataFrame,
     split_quotas: dict[str, dict[str, int]] = REQUESTED_SEIZURE_SPLITS,
     random_seed: int = RANDOM_SEED,
+    interictal_controls_per_seizure: int = 1,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Randomly assign disjoint seizures and matched controls to exact splits.
+    """Randomly assign disjoint seizures and controls to exact splits.
 
     The requested design deliberately allows the same patient to occur in
     multiple splits. Individual seizure episodes and interictal episodes remain
@@ -686,19 +759,27 @@ def assign_requested_splits(
                 f"{patient_id} has {len(patient_positive)} eligible seizures, "
                 f"but the requested quotas require {required_count}."
             )
-        if len(patient_negative) < required_count:
+        required_negative = required_count * interictal_controls_per_seizure
+        if len(patient_negative) != required_negative:
             raise ValueError(
                 f"{patient_id} has {len(patient_negative)} controls for "
-                f"{required_count} requested seizures."
+                f"{required_count} requested seizures at a "
+                f"{interictal_controls_per_seizure}:1 control ratio."
             )
 
         positive_order = rng.permutation(patient_positive)
-        negative_order = rng.permutation(patient_negative)[:required_count]
-        cursor = 0
+        negative_order = rng.permutation(patient_negative)
+        positive_cursor = 0
+        negative_cursor = 0
         for split_name in ("train", "validation", "test"):
             count = split_quotas[split_name].get(patient_id, 0)
-            selected_positive = positive_order[cursor : cursor + count]
-            selected_negative = negative_order[cursor : cursor + count]
+            negative_count = count * interictal_controls_per_seizure
+            selected_positive = positive_order[
+                positive_cursor : positive_cursor + count
+            ]
+            selected_negative = negative_order[
+                negative_cursor : negative_cursor + negative_count
+            ]
             for rank, row_index in enumerate(selected_positive, start=1):
                 result.loc[row_index, ["dataset_split", "split_selection_rank"]] = [
                     split_name,
@@ -719,7 +800,8 @@ def assign_requested_splits(
                     split_name,
                     rank,
                 ]
-            cursor += count
+            positive_cursor += count
+            negative_cursor += negative_count
 
     unused = result.loc[result["dataset_split"].eq("")]
     if not unused.empty:
@@ -807,17 +889,79 @@ def _episode_landmarks(
 def _cache_signature(
     manifest: pd.DataFrame, config: ForecastConfig
 ) -> dict[str, Any]:
+    signature_columns = [
+        "episode_id",
+        "patient_id",
+        "source_event_id",
+        "episode_type",
+        "recording",
+        "edf_path",
+        "anchor_seconds",
+        "training_episode_end_seconds",
+        "event_onset_seconds",
+    ]
+    if "dataset_split" in manifest:
+        signature_columns.append("dataset_split")
+    signature_manifest = (
+        manifest[signature_columns]
+        .copy()
+        .sort_values("episode_id")
+    )
+    text_columns = [
+        "episode_id",
+        "patient_id",
+        "source_event_id",
+        "episode_type",
+        "recording",
+        "edf_path",
+    ]
+    if "dataset_split" in signature_manifest:
+        text_columns.append("dataset_split")
+    for column in text_columns:
+        # CSV round-tripping converts empty control event IDs to NaN. Treat
+        # blank and missing identifiers identically for cache validity.
+        signature_manifest[column] = (
+            signature_manifest[column].fillna("").astype(str)
+        )
+    signature_manifest = signature_manifest.astype(object)
+    signature_manifest = signature_manifest.where(
+        pd.notna(signature_manifest), None
+    )
     return {
         "module_version": FEATURE_CACHE_VERSION,
         "config": asdict(config),
-        "episode_ids": manifest["episode_id"].tolist(),
-        "recordings": sorted(manifest["recording"].unique().tolist()),
-        "dataset_splits": (
-            manifest["dataset_split"].tolist()
-            if "dataset_split" in manifest
-            else []
-        ),
+        "manifest": signature_manifest.to_dict(orient="records"),
     }
+
+
+def _feature_signature_matches(
+    cached_signature: dict[str, Any], current_signature: dict[str, Any]
+) -> bool:
+    """Compare cache signatures while ignoring alarm/model-only settings.
+
+    Changing an operational alarm threshold or its consecutive-reading rule
+    must not force EDF rereads: neither changes the signal features or labels.
+    """
+
+    data_fields = {
+        "bin_seconds",
+        "horizon_seconds",
+        "context_seconds",
+        "pre_onset_seconds",
+        "target_sample_rate",
+        "min_eeg_channels",
+    }
+
+    def canonical(signature: dict[str, Any]) -> dict[str, Any]:
+        result = dict(signature)
+        result["config"] = {
+            key: value
+            for key, value in signature.get("config", {}).items()
+            if key in data_fields
+        }
+        return result
+
+    return canonical(cached_signature) == canonical(current_signature)
 
 
 def build_landmark_dataset(
@@ -847,7 +991,7 @@ def build_landmark_dataset(
             cached_signature = json.loads(cache_metadata_json.read_text("utf-8"))
             cached = pd.read_csv(cache_csv)
             if (
-                cached_signature == signature
+                _feature_signature_matches(cached_signature, signature)
                 and set(MODEL_FEATURE_COLUMNS).issubset(cached.columns)
                 and len(cached) == len(manifest) * config.pre_onset_steps
             ):
@@ -857,16 +1001,81 @@ def build_landmark_dataset(
         except (OSError, ValueError, json.JSONDecodeError):
             pass
 
-    frames: list[pd.DataFrame] = []
-    total = len(manifest)
-    for number, (_, episode) in enumerate(manifest.iterrows(), start=1):
-        if verbose:
-            print(
-                f"[{number:>3}/{total}] {episode['episode_id']} "
-                f"({episode['recording']})",
-                flush=True,
-            )
-        frames.append(_episode_landmarks(episode, config))
+    # Keep a small, signature-checked cache per episode while the combined
+    # table is being built. EDF extraction is the expensive operation; this
+    # makes recovery from one unusable recording resumable instead of forcing
+    # a complete reread of every prior recording.
+    episode_cache_dir: Path | None = None
+    if cache_csv is not None:
+        episode_cache_dir = cache_csv.parent / f"{cache_csv.stem}_episodes"
+        episode_cache_dir.mkdir(parents=True, exist_ok=True)
+
+    episodes = [episode.copy() for _, episode in manifest.iterrows()]
+
+    def load_or_extract(episode: pd.Series) -> pd.DataFrame:
+        episode_frame: pd.DataFrame | None = None
+        episode_signature = _cache_signature(
+            pd.DataFrame([episode.to_dict()]), config
+        )
+        if episode_cache_dir is not None:
+            safe_id = str(episode["episode_id"]).replace("/", "_").replace("\\", "_")
+            episode_cache = episode_cache_dir / f"{safe_id}.pkl"
+            episode_metadata = episode_cache_dir / f"{safe_id}.json"
+            if episode_cache.exists() and episode_metadata.exists():
+                try:
+                    if _feature_signature_matches(
+                        json.loads(episode_metadata.read_text("utf-8")),
+                        episode_signature,
+                    ):
+                        candidate = pd.read_pickle(episode_cache)
+                        if (
+                            len(candidate) == config.pre_onset_steps
+                            and set(MODEL_FEATURE_COLUMNS).issubset(candidate.columns)
+                        ):
+                            episode_frame = candidate
+                except (OSError, ValueError, json.JSONDecodeError):
+                    episode_frame = None
+        if episode_frame is None:
+            try:
+                episode_frame = _episode_landmarks(episode, config)
+            except ValueError as error:
+                raise ValueError(
+                    f"Episode {episode['episode_id']} ({episode['recording']}) "
+                    f"cannot be used: {error}"
+                ) from error
+            if episode_cache_dir is not None:
+                episode_frame.to_pickle(episode_cache)
+                episode_metadata.write_text(
+                    json.dumps(episode_signature, indent=2, sort_keys=True),
+                    encoding="utf-8",
+                )
+        return episode_frame
+
+    # Different EDF files can be read concurrently, but pyEDFlib is not safe
+    # when separate threads open the same recording. Group episodes by file so
+    # each recording is handled serially within one worker.
+    if verbose:
+        print(
+            f"Building {len(episodes)} episode feature tables with up to 4 EDF workers.",
+            flush=True,
+        )
+    grouped_episodes: dict[str, list[pd.Series]] = {}
+    for episode in episodes:
+        grouped_episodes.setdefault(str(episode["edf_path"]), []).append(episode)
+
+    def load_recording_group(group: list[pd.Series]) -> list[pd.DataFrame]:
+        return [load_or_extract(episode) for episode in group]
+
+    with ThreadPoolExecutor(max_workers=min(4, len(episodes))) as executor:
+        grouped_frames = list(
+            executor.map(load_recording_group, grouped_episodes.values())
+        )
+    frame_by_episode = {
+        str(frame.iloc[0]["episode_id"]): frame
+        for group in grouped_frames
+        for frame in group
+    }
+    frames = [frame_by_episode[str(episode["episode_id"])] for episode in episodes]
     landmarks = pd.concat(frames, ignore_index=True)
     expected_rows = len(manifest) * config.pre_onset_steps
     if len(landmarks) != expected_rows:
@@ -1006,38 +1215,95 @@ def make_person_period(
 def fit_hazard_model(
     development: pd.DataFrame,
     config: ForecastConfig = ForecastConfig(),
-) -> HistGradientBoostingClassifier:
-    """Fit a nonlinear discrete-time hazard model by weighted log loss."""
+) -> TwoStageForecastModel:
+    """Fit nonlinear horizon risk plus regularized discrete-hazard timing.
+
+    The Extra Trees stage learns whether an onset occurs in the configured
+    horizon from robust high-channel-quantile variability. The hazard stage
+    retains the complete future-bin timing distribution. Combining them keeps
+    the original output contract while avoiding the weak linear risk ranking.
+    """
 
     x, y, weights = make_person_period(development, config)
-    model = HistGradientBoostingClassifier(
+    classifier = SGDClassifier(
         loss="log_loss",
-        learning_rate=config.learning_rate,
+        penalty="l2",
+        alpha=config.l2_regularization,
+        learning_rate="optimal",
         max_iter=config.max_iter,
-        max_leaf_nodes=config.max_leaf_nodes,
-        min_samples_leaf=config.min_samples_leaf,
-        l2_regularization=config.l2_regularization,
-        # The separately specified validation seizures are reserved for model
-        # selection and thresholding, so no hidden random validation split is
-        # created inside the training set.
-        early_stopping=False,
+        tol=1e-4,
+        average=True,
+        n_jobs=-1,
         random_state=config.random_seed,
+    )
+    timing_model = Pipeline(
+        [
+            ("standardize", StandardScaler()),
+            ("classifier", classifier),
+        ]
     )
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", category=RuntimeWarning)
-        model.fit(x, y, sample_weight=weights)
-    return model
+        warnings.simplefilter("ignore", category=ConvergenceWarning)
+        timing_model.fit(x, y, classifier__sample_weight=weights)
+
+    risk_feature_columns = tuple(
+        column
+        for column in MODEL_FEATURE_COLUMNS
+        if "channel_p90_std" in column
+    )
+    if not risk_feature_columns:
+        raise AssertionError("No channel-p90 variability features are available.")
+    risk_model = ExtraTreesClassifier(
+        n_estimators=500,
+        min_samples_leaf=5,
+        max_features=1.0,
+        class_weight="balanced",
+        n_jobs=-1,
+        random_state=config.random_seed,
+    )
+    risk_model.fit(
+        development[list(risk_feature_columns)],
+        development["has_event_in_horizon"].to_numpy(dtype=int),
+    )
+    return TwoStageForecastModel(
+        timing_model=timing_model,
+        risk_model=risk_model,
+        risk_feature_columns=risk_feature_columns,
+        smoothing_alpha=0.10,
+    )
+
+
+def model_iteration_count(model: Any) -> int | None:
+    """Return fitted iterations for supported estimators."""
+
+    if isinstance(model, TwoStageForecastModel):
+        return len(getattr(model.risk_model, "estimators_", [])) or None
+    if isinstance(model, Pipeline):
+        classifier = model.named_steps.get("classifier")
+        value = getattr(classifier, "n_iter_", None)
+    else:
+        value = getattr(model, "n_iter_", None)
+    if value is None:
+        return None
+    array = np.asarray(value).reshape(-1)
+    return int(array.max())
 
 
 def predict_horizon_distribution(
-    model: HistGradientBoostingClassifier,
+    model: Any,
     landmark_features: pd.DataFrame | np.ndarray,
     config: ForecastConfig = ForecastConfig(),
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Return hazards, r/i-bin probability mass, and no-event mass."""
 
-    if isinstance(landmark_features, pd.DataFrame):
-        base = landmark_features[MODEL_FEATURE_COLUMNS].to_numpy(dtype=float)
+    feature_frame = (
+        landmark_features.reset_index(drop=True)
+        if isinstance(landmark_features, pd.DataFrame)
+        else None
+    )
+    if feature_frame is not None:
+        base = feature_frame[MODEL_FEATURE_COLUMNS].to_numpy(dtype=float)
     else:
         base = np.asarray(landmark_features, dtype=float)
     if base.ndim != 2 or base.shape[1] != len(MODEL_FEATURE_COLUMNS):
@@ -1055,7 +1321,14 @@ def predict_horizon_distribution(
     x[:, -2] = (lead_bins + 0.5) / config.n_bins
     x[:, -1] = np.log1p((lead_bins + 0.5) * config.bin_seconds)
 
-    hazards = model.predict_proba(x)[:, 1].reshape(n_samples, config.n_bins)
+    timing_model = (
+        model.timing_model
+        if isinstance(model, TwoStageForecastModel)
+        else model
+    )
+    hazards = timing_model.predict_proba(x)[:, 1].reshape(
+        n_samples, config.n_bins
+    )
     hazards = np.clip(hazards, 1e-7, 1 - 1e-7)
     survival_before = np.concatenate(
         [
@@ -1066,9 +1339,121 @@ def predict_horizon_distribution(
     )
     pmf = hazards * survival_before
     no_event = np.prod(1.0 - hazards, axis=1)
+
+    if isinstance(model, TwoStageForecastModel):
+        column_indices = [
+            MODEL_FEATURE_COLUMNS.index(column)
+            for column in model.risk_feature_columns
+        ]
+        risk_input = pd.DataFrame(
+            base[:, column_indices],
+            columns=list(model.risk_feature_columns),
+        )
+        risk_values = model.risk_model.predict_proba(risk_input)[:, 1]
+        if (
+            feature_frame is not None
+            and {"episode_id", "landmark_step"}.issubset(feature_frame.columns)
+        ):
+            smoothed = np.empty_like(risk_values)
+            for _, group in feature_frame.groupby("episode_id", sort=False):
+                ordered = group.sort_values("landmark_step").index.to_numpy()
+                smoothed[ordered] = (
+                    pd.Series(risk_values[ordered])
+                    .ewm(alpha=model.smoothing_alpha, adjust=False)
+                    .mean()
+                    .to_numpy()
+                )
+            risk_values = smoothed
+        risk_values = np.clip(risk_values, 1e-7, 1.0 - 1e-7)
+        base_risk = 1.0 - no_event
+        conditional = pmf / np.clip(base_risk[:, None], 1e-12, None)
+        zero_rows = base_risk <= 1e-12
+        if zero_rows.any():
+            conditional[zero_rows] = 1.0 / config.n_bins
+        conditional /= np.clip(
+            conditional.sum(axis=1, keepdims=True), 1e-12, None
+        )
+        pmf = conditional * risk_values[:, None]
+        no_event = 1.0 - risk_values
+        survival_before = 1.0 - np.concatenate(
+            [
+                np.zeros((n_samples, 1), dtype=float),
+                np.cumsum(pmf[:, :-1], axis=1),
+            ],
+            axis=1,
+        )
+        hazards = np.clip(
+            pmf / np.clip(survival_before, 1e-12, None),
+            1e-7,
+            1.0 - 1e-7,
+        )
     if not np.allclose(pmf.sum(axis=1) + no_event, 1.0, atol=1e-8):
         raise AssertionError("Forecast probabilities do not sum to one.")
     return hazards, pmf, no_event
+
+
+def alarm_state_from_risk(
+    risk: np.ndarray,
+    threshold: float,
+    alarm_on_consecutive: int = 2,
+    alarm_off_consecutive: int = 13,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Apply a hysteretic alarm state machine to one ordered episode.
+
+    A warning turns on at the second consecutive high-risk landmark. Once on,
+    it remains on until the thirteenth consecutive low-risk landmark. With
+    five-second landmarks, that release condition is 65 seconds of low risk.
+    """
+
+    values = np.asarray(risk, dtype=float)
+    high = values >= threshold
+    active = np.zeros(len(values), dtype=bool)
+    is_active = False
+    high_run = 0
+    low_run = 0
+    for index, is_high in enumerate(high):
+        if not is_active:
+            high_run = high_run + 1 if is_high else 0
+            if high_run >= alarm_on_consecutive:
+                is_active = True
+                low_run = 0
+        else:
+            low_run = 0 if is_high else low_run + 1
+            if low_run >= alarm_off_consecutive:
+                is_active = False
+                high_run = 0
+        active[index] = is_active
+    return high, active
+
+
+def _alarm_columns(
+    frame: pd.DataFrame,
+    risk: np.ndarray,
+    threshold: float,
+    alarm_on_consecutive: int,
+    alarm_off_consecutive: int,
+) -> pd.DataFrame:
+    """Return raw threshold flags and episode-local persistent alarm states."""
+
+    if len(frame) != len(risk):
+        raise ValueError("Risk vector length must match the scored frame.")
+    scored = frame[["episode_id", "landmark_step"]].copy().reset_index(drop=True)
+    scored["risk"] = np.asarray(risk, dtype=float)
+    scored["raw_high_probability"] = False
+    scored["alarm_active"] = False
+    for _, indices in scored.sort_values(
+        ["episode_id", "landmark_step"]
+    ).groupby("episode_id").groups.items():
+        ordered = np.asarray(list(indices), dtype=int)
+        high, alarm = alarm_state_from_risk(
+            scored.loc[ordered, "risk"].to_numpy(dtype=float),
+            threshold,
+            alarm_on_consecutive,
+            alarm_off_consecutive,
+        )
+        scored.loc[ordered, "raw_high_probability"] = high
+        scored.loc[ordered, "alarm_active"] = alarm
+    return scored[["raw_high_probability", "alarm_active"]]
 
 
 def _warning_summary(
@@ -1076,12 +1461,22 @@ def _warning_summary(
     risk: np.ndarray,
     threshold: float,
     bin_seconds: int = BIN_SECONDS,
+    alarm_on_consecutive: int = 2,
+    alarm_off_consecutive: int = 13,
 ) -> dict[str, float]:
     scored = frame[
         ["episode_id", "patient_id", "episode_type", "landmark_step", "time_to_event_seconds"]
     ].copy()
     scored["risk"] = risk
-    scored["warning"] = scored["risk"] >= threshold
+    alarm = _alarm_columns(
+        scored,
+        risk,
+        threshold,
+        alarm_on_consecutive,
+        alarm_off_consecutive,
+    )
+    scored["raw_high_probability"] = alarm["raw_high_probability"].to_numpy()
+    scored["warning"] = alarm["alarm_active"].to_numpy()
     positive = scored.loc[scored["episode_type"].eq("preictal")]
     negative = scored.loc[scored["episode_type"].eq("interictal")]
 
@@ -1122,18 +1517,41 @@ def select_warning_threshold(
     risk: np.ndarray,
     target_time_in_warning: float = 0.25,
     bin_seconds: int = BIN_SECONDS,
+    alarm_on_consecutive: int = 2,
+    alarm_off_consecutive: int = 13,
+    minimum_sensitivity_target: float | None = None,
 ) -> tuple[float, pd.DataFrame]:
-    """Choose a development-only warning threshold under a TiW target."""
+    """Choose a development-only operating point.
+
+    When a minimum sensitivity is requested, choose the qualifying point with
+    the fewest false alarms and then the least warning time. Otherwise retain
+    the original time-in-warning constrained selection.
+    """
 
     quantiles = np.linspace(0, 1, 201)
     candidates = np.unique(np.r_[0.0, np.quantile(risk, quantiles), 1.0])
     rows: list[dict[str, float]] = []
     for threshold in candidates:
         summary = _warning_summary(
-            development, risk, float(threshold), bin_seconds
+            development,
+            risk,
+            float(threshold),
+            bin_seconds,
+            alarm_on_consecutive,
+            alarm_off_consecutive,
         )
         rows.append({"threshold": float(threshold), **summary})
     curve = pd.DataFrame(rows)
+    if minimum_sensitivity_target is not None:
+        sensitivity_eligible = curve.loc[
+            curve["sensitivity"] >= minimum_sensitivity_target
+        ].copy()
+        if not sensitivity_eligible.empty:
+            selected = sensitivity_eligible.sort_values(
+                ["false_alarms_per_hour", "time_in_warning", "threshold"],
+                ascending=[True, True, False],
+            ).iloc[0]
+            return float(selected["threshold"]), curve
     eligible = curve.loc[curve["time_in_warning"] <= target_time_in_warning].copy()
     if eligible.empty or eligible["sensitivity"].max() <= 0:
         curve["objective"] = curve["sensitivity"] - curve["time_in_warning"]
@@ -1163,7 +1581,7 @@ def _class_baseline(
 
 
 def evaluate_forecasts(
-    model: HistGradientBoostingClassifier,
+    model: Any,
     development: pd.DataFrame,
     holdout: pd.DataFrame,
     warning_time_target: float = 0.25,
@@ -1180,6 +1598,9 @@ def evaluate_forecasts(
         development_risk,
         warning_time_target,
         config.bin_seconds,
+        config.alarm_on_consecutive,
+        config.alarm_off_consecutive,
+        config.minimum_development_sensitivity,
     )
 
     hazards, pmf, no_event = predict_horizon_distribution(
@@ -1249,14 +1670,43 @@ def evaluate_forecasts(
     prediction_columns["integrated_brier"] = integrated_brier
     prediction_columns["expected_seconds_given_event"] = expected_seconds
     prediction_columns["absolute_timing_error_seconds"] = timing_error
-    prediction_columns["warning"] = risk >= threshold
+    alarm = _alarm_columns(
+        prediction_columns,
+        risk,
+        threshold,
+        config.alarm_on_consecutive,
+        config.alarm_off_consecutive,
+    )
+    prediction_columns["raw_high_probability"] = alarm["raw_high_probability"].to_numpy()
+    prediction_columns["alarm_active"] = alarm["alarm_active"].to_numpy()
+    prediction_columns["warning"] = prediction_columns["alarm_active"]
     for index in range(config.n_bins):
         prediction_columns[f"p_bin_{index + 1:02d}"] = pmf[:, index]
 
     warning_metrics = _warning_summary(
-        holdout, risk, threshold, config.bin_seconds
+        holdout,
+        risk,
+        threshold,
+        config.bin_seconds,
+        config.alarm_on_consecutive,
+        config.alarm_off_consecutive,
     )
     horizon_label = f"{config.horizon_seconds / 60:g}-minute"
+    auroc = (
+        float(roc_auc_score(has_event, risk))
+        if np.unique(has_event).size == 2
+        else float("nan")
+    )
+    average_precision = (
+        float(average_precision_score(has_event, risk))
+        if has_event.any()
+        else float("nan")
+    )
+    timing_mae = (
+        float(np.nanmean(timing_error))
+        if np.isfinite(timing_error).any()
+        else float("nan")
+    )
     metrics = [
         {
             "metric": "negative log likelihood",
@@ -1286,23 +1736,26 @@ def evaluate_forecasts(
         },
         {
             "metric": f"{horizon_label} AUROC",
-            "value": float(roc_auc_score(has_event, risk)),
+            "value": auroc,
             "interpretation": "Discrimination only; does not assess calibration.",
         },
         {
             "metric": f"{horizon_label} average precision",
-            "value": float(average_precision_score(has_event, risk)),
+            "value": average_precision,
             "interpretation": "Ranking metric sensitive to event prevalence.",
         },
         {
             "metric": "conditional timing MAE (seconds)",
-            "value": float(np.nanmean(timing_error)),
+            "value": timing_mae,
             "interpretation": "Error of expected onset time among seizure landmarks.",
         },
         {
             "metric": "seizure sensitivity",
             "value": warning_metrics["sensitivity"],
-            "interpretation": "Fraction of seizure episodes with at least one warning.",
+            "interpretation": (
+                f"Fraction of seizure episodes with an alarm after "
+                f"{config.alarm_on_consecutive} consecutive high-risk landmarks."
+            ),
         },
         {
             "metric": "time in warning",
@@ -1315,7 +1768,10 @@ def evaluate_forecasts(
         {
             "metric": "false alarms per hour",
             "value": warning_metrics["false_alarms_per_hour"],
-            "interpretation": "Rising warning edges in interictal episodes per monitored hour.",
+            "interpretation": (
+                "Rising persistent-alarm edges in interictal episodes per "
+                "monitored hour."
+            ),
         },
         {
             "metric": "median warning lead (seconds)",
@@ -1325,7 +1781,10 @@ def evaluate_forecasts(
         {
             "metric": "development-selected warning threshold",
             "value": threshold,
-            "interpretation": "Chosen without holdout outcomes under the configured TiW target.",
+            "interpretation": (
+                "Chosen without holdout outcomes to meet the configured "
+                "development-sensitivity target, then minimize false alarms."
+            ),
         },
     ]
     metrics_frame = pd.DataFrame(metrics)
@@ -1335,7 +1794,12 @@ def evaluate_forecasts(
         group_risk = group["event_risk"].to_numpy()
         group_has_event = group["has_event_in_horizon"].to_numpy(dtype=bool)
         warning = _warning_summary(
-            group, group_risk, threshold, config.bin_seconds
+            group,
+            group_risk,
+            threshold,
+            config.bin_seconds,
+            config.alarm_on_consecutive,
+            config.alarm_off_consecutive,
         )
         patient_rows.append(
             {
@@ -1386,11 +1850,13 @@ def extract_context_features_from_edf(
 
 
 def build_seizure_reading_forecasts(
-    model: HistGradientBoostingClassifier,
+    model: Any,
     seizure_manifest: pd.DataFrame,
     landmarks: pd.DataFrame,
     config: ForecastConfig = ForecastConfig(),
     verbose: bool = True,
+    onset_cache_csv: str | Path | None = None,
+    onset_cache_json: str | Path | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """Forecast every reading from ``-m`` through onset for each seizure.
 
@@ -1406,9 +1872,88 @@ def build_seizure_reading_forecasts(
     if seizures.empty:
         raise ValueError("No preictal seizures were supplied.")
 
+    onset_signature = {
+        "feature_cache_version": FEATURE_CACHE_VERSION,
+        "bin_seconds": config.bin_seconds,
+        "context_seconds": config.context_seconds,
+        "target_sample_rate": config.target_sample_rate,
+        "min_eeg_channels": config.min_eeg_channels,
+        "seizures": (
+            seizures[
+                [
+                    "episode_id",
+                    "edf_path",
+                    "event_onset_seconds",
+                ]
+            ]
+            .sort_values("episode_id")
+            .to_dict(orient="records")
+        ),
+    }
+    onset_cache_csv = (
+        Path(onset_cache_csv) if onset_cache_csv is not None else None
+    )
+    onset_cache_json = (
+        Path(onset_cache_json) if onset_cache_json is not None else None
+    )
+    onset_features: pd.DataFrame | None = None
+    if (
+        onset_cache_csv is not None
+        and onset_cache_json is not None
+        and onset_cache_csv.exists()
+        and onset_cache_json.exists()
+    ):
+        try:
+            saved_signature = json.loads(
+                onset_cache_json.read_text(encoding="utf-8")
+            )
+            cached_onsets = pd.read_csv(onset_cache_csv)
+            if (
+                saved_signature == onset_signature
+                and set(MODEL_FEATURE_COLUMNS).issubset(cached_onsets.columns)
+                and cached_onsets["episode_id"].nunique() == len(seizures)
+            ):
+                onset_features = cached_onsets
+                if verbose:
+                    print(
+                        f"Loaded {len(onset_features)} cached onset contexts."
+                    )
+        except (OSError, ValueError, json.JSONDecodeError):
+            onset_features = None
+
+    if onset_features is None:
+        onset_rows: list[dict[str, Any]] = []
+        for number, episode in enumerate(seizures.itertuples(), start=1):
+            extracted = extract_context_features_from_edf(
+                episode.edf_path,
+                float(episode.event_onset_seconds),
+                config,
+            ).iloc[0]
+            onset_rows.append(
+                {
+                    "episode_id": episode.episode_id,
+                    **extracted.to_dict(),
+                }
+            )
+            if verbose:
+                print(
+                    f"[{number:>2}/{len(seizures)}] onset context "
+                    f"{episode.source_event_id} ({episode.dataset_split})",
+                    flush=True,
+                )
+        onset_features = pd.DataFrame(onset_rows)
+        if onset_cache_csv is not None and onset_cache_json is not None:
+            onset_cache_csv.parent.mkdir(parents=True, exist_ok=True)
+            onset_features.to_csv(onset_cache_csv, index=False)
+            onset_cache_json.write_text(
+                json.dumps(onset_signature, indent=2, sort_keys=True),
+                encoding="utf-8",
+            )
+
+    onset_lookup = onset_features.set_index("episode_id")
     feature_frames: list[pd.DataFrame] = []
     metadata_rows: list[dict[str, Any]] = []
-    for number, episode in enumerate(seizures.itertuples(), start=1):
+    for episode in seizures.itertuples():
         cached = landmarks.loc[
             landmarks["episode_id"].eq(episode.episode_id)
         ].sort_values("landmark_step")
@@ -1417,15 +1962,14 @@ def build_seizure_reading_forecasts(
                 f"{episode.episode_id} has {len(cached)} cached readings; "
                 f"expected {config.pre_onset_steps}."
             )
-        onset_features = extract_context_features_from_edf(
-            episode.edf_path,
-            float(episode.event_onset_seconds),
-            config,
+        onset_row = pd.DataFrame(
+            [onset_lookup.loc[episode.episode_id, MODEL_FEATURE_COLUMNS]],
+            columns=MODEL_FEATURE_COLUMNS,
         )
         episode_features = pd.concat(
             [
                 cached[MODEL_FEATURE_COLUMNS].reset_index(drop=True),
-                onset_features,
+                onset_row,
             ],
             ignore_index=True,
         )
@@ -1450,15 +1994,12 @@ def build_seizure_reading_forecasts(
                     "minutes_before_onset": seconds_before / 60.0,
                 }
             )
-        if verbose:
-            print(
-                f"[{number:>2}/{len(seizures)}] onset context "
-                f"{episode.source_event_id} ({episode.dataset_split})",
-                flush=True,
-            )
-
-    all_features = pd.concat(feature_frames, ignore_index=True)
     reading_metadata = pd.DataFrame(metadata_rows)
+    all_features = pd.concat(feature_frames, ignore_index=True)
+    all_features["episode_id"] = reading_metadata["episode_id"].to_numpy()
+    all_features["landmark_step"] = reading_metadata[
+        "reading_index"
+    ].to_numpy()
     if len(all_features) != len(reading_metadata):
         raise AssertionError("Reading feature and metadata counts differ.")
     _, pmf, no_event = predict_horizon_distribution(
@@ -1537,7 +2078,7 @@ def moving_horizon_forecast_table(
         raise ValueError("episode_step must be nonnegative.")
     visible = pmf.copy()
     event_risk = float(visible.sum())
-    no_event_next_5m = float(1.0 - event_risk)
+    no_event_probability = float(1.0 - event_risk)
     conditional = (
         visible / event_risk if event_risk > 1e-12 else np.zeros_like(visible)
     )
@@ -1562,7 +2103,7 @@ def moving_horizon_forecast_table(
             "survival_probability": 1.0 - cumulative,
         }
     )
-    return table, no_event_next_5m
+    return table, no_event_probability
 
 
 # Backward-compatible name for code that imported the original helper.  Its
@@ -1581,7 +2122,7 @@ class RollingForecastEngine:
 
     def __init__(
         self,
-        model: HistGradientBoostingClassifier,
+        model: Any,
         edf_path: str | Path,
         episode_anchor_seconds: float,
         config: ForecastConfig = ForecastConfig(),
@@ -1642,6 +2183,10 @@ class RollingForecastEngine:
         self.context_features = pd.DataFrame(
             contexts, columns=MODEL_FEATURE_COLUMNS
         )
+        self.context_features["episode_id"] = "rolling_replay"
+        self.context_features["landmark_step"] = np.arange(
+            self.max_step + 1
+        )
         (
             self.precomputed_hazards,
             self.precomputed_pmf,
@@ -1684,7 +2229,12 @@ class RollingForecastEngine:
                 f"Requested step {step} exceeds the precomputed replay. "
                 "Construct the engine with a longer replay_duration_seconds."
             )
-        if step <= self.last_step and self.last_result is not None:
+        if step < self.last_step:
+            raise ValueError(
+                "RollingForecastEngine requires nondecreasing recording times; "
+                f"requested step {step} after step {self.last_step}."
+            )
+        if step == self.last_step and self.last_result is not None:
             return {
                 **self.last_result,
                 "updated": False,
@@ -1742,19 +2292,13 @@ def readable_feature_name(feature: str) -> str:
     )
     base = feature.rsplit("_", 1)[0] if aggregation else feature
     replacements = {
-        "relative_delta": "delta relative power",
-        "relative_theta": "theta relative power",
-        "relative_alpha": "alpha relative power",
-        "relative_beta": "beta relative power",
-        "relative_low_gamma": "low-gamma relative power",
-        "log_power_delta": "delta log power",
-        "log_power_theta": "theta log power",
-        "log_power_alpha": "alpha log power",
-        "log_power_beta": "beta log power",
-        "log_power_low_gamma": "low-gamma log power",
         "log_rms": "log RMS amplitude",
         "log_line_length": "log line length",
-        "spectral_entropy": "spectral entropy",
+        "log_mad": "log robust amplitude",
+        "log_robust_range": "log robust peak-to-peak range",
+        "zero_crossing_rate": "zero-crossing rate",
+        "hjorth_mobility": "Hjorth mobility",
+        "hjorth_complexity": "Hjorth complexity",
         "usable_channel_fraction": "usable-channel fraction",
     }
     base_label = replacements.get(base, base.replace("_", " "))
@@ -1785,7 +2329,7 @@ def _forecast_negative_log_likelihood(
 
 
 def permutation_feature_importance(
-    model: HistGradientBoostingClassifier,
+    model: Any,
     validation: pd.DataFrame,
     config: ForecastConfig = ForecastConfig(),
     n_repeats: int = 2,
@@ -1845,7 +2389,7 @@ def permutation_feature_importance(
 
 
 def local_counterfactual_explanation(
-    model: HistGradientBoostingClassifier,
+    model: Any,
     reading: pd.DataFrame,
     reference: pd.DataFrame | pd.Series,
     config: ForecastConfig = ForecastConfig(),
@@ -1908,7 +2452,7 @@ def local_counterfactual_explanation(
 
 def save_model_bundle(
     path: str | Path,
-    model: HistGradientBoostingClassifier,
+    model: Any,
     config: ForecastConfig,
     threshold: float,
     split: dict[str, list[str]],
@@ -1920,7 +2464,9 @@ def save_model_bundle(
     path.parent.mkdir(parents=True, exist_ok=True)
     bundle = {
         "model": model,
-        "config": config,
+        # Store plain data instead of a custom dataclass instance so joblib.load
+        # works even when this module has not already been imported.
+        "config": asdict(config),
         "warning_threshold": float(threshold),
         "model_feature_columns": MODEL_FEATURE_COLUMNS.copy(),
         "hazard_feature_columns": HAZARD_FEATURE_COLUMNS.copy(),
@@ -1931,6 +2477,36 @@ def save_model_bundle(
     }
     joblib.dump(bundle, path)
     return path
+
+
+def load_model_bundle(path: str | Path) -> dict[str, Any]:
+    """Load a saved bundle and reconstruct its validated configuration."""
+
+    bundle = joblib.load(Path(path))
+    required = {
+        "model",
+        "config",
+        "warning_threshold",
+        "model_feature_columns",
+        "hazard_feature_columns",
+    }
+    missing = sorted(required - set(bundle))
+    if missing:
+        raise ValueError(f"Model bundle is missing fields: {missing}")
+    raw_config = bundle["config"]
+    if isinstance(raw_config, ForecastConfig):
+        # Backward compatibility with bundles created before module version 3.2.
+        config = raw_config
+    elif isinstance(raw_config, dict):
+        config = ForecastConfig(**raw_config)
+    else:
+        raise TypeError("Model bundle config must be a dict or ForecastConfig.")
+    config.validate()
+    if list(bundle["model_feature_columns"]) != MODEL_FEATURE_COLUMNS:
+        raise ValueError("Model bundle feature columns do not match this module.")
+    if list(bundle["hazard_feature_columns"]) != HAZARD_FEATURE_COLUMNS:
+        raise ValueError("Model bundle hazard columns do not match this module.")
+    return {**bundle, "config": config}
 
 
 def probability_invariants(

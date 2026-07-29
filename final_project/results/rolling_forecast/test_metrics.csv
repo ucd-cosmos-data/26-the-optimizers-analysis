@@ -1,13 +1,13 @@
 metric,value,interpretation
-negative log likelihood,3.728306536482756,Lower is better; proper score for the observed bin/no-event class.
-multicategory Brier score,0.9703559798078023,Lower is better; probability error across 60 bins plus no-event.
-multicategory Brier skill score,-0.30103595058029353,Above 0 improves on the development-set class-frequency forecast.
-integrated survival Brier score,0.2533931768696615,Lower is better; mean survival-probability error across 5-minute horizon.
-5-minute AUROC,0.2823958333333333,Discrimination only; does not assess calibration.
-5-minute average precision,0.43704363983316563,Ranking metric sensitive to event prevalence.
-conditional timing MAE (seconds),74.28825297287291,Error of expected onset time among seizure landmarks.
-seizure sensitivity,0.5,Fraction of seizure episodes with at least one warning.
-time in warning,0.15625,Fraction of evaluated 5-second landmarks under warning.
-false alarms per hour,13.5,Rising warning edges in interictal episodes per monitored hour.
-median warning lead (seconds),115.0,First-warning lead among captured holdout seizures.
-development-selected warning threshold,0.9827229683155347,Chosen without holdout outcomes under the configured TiW target.
+negative log likelihood,1.302926458651556,Lower is better; proper score for the observed bin/no-event class.
+multicategory Brier score,0.35558710321934095,Lower is better; probability error across 60 bins plus no-event.
+multicategory Brier skill score,0.010425501244876734,Above 0 improves on the development-set class-frequency forecast.
+integrated survival Brier score,0.0844722586806085,Lower is better; mean survival-probability error across 5-minute horizon.
+5-minute AUROC,0.6681510416666666,Discrimination only; does not assess calibration.
+5-minute average precision,0.3071614830257689,Ranking metric sensitive to event prevalence.
+conditional timing MAE (seconds),74.88001812164302,Error of expected onset time among seizure landmarks.
+seizure sensitivity,1.0,Fraction of seizure episodes with an alarm after 2 consecutive high-risk landmarks.
+time in warning,0.5291666666666667,Fraction of evaluated 5-second landmarks under warning.
+false alarms per hour,10.125,Rising persistent-alarm edges in interictal episodes per monitored hour.
+median warning lead (seconds),252.5,First-warning lead among captured holdout seizures.
+development-selected warning threshold,0.23000966120588498,"Chosen without holdout outcomes to meet the configured development-sensitivity target, then minimize false alarms."

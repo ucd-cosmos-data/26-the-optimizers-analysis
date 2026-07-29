@@ -1,57 +1,93 @@
 feature,readable_feature,importance_nll_increase,importance_std,baseline_validation_nll,repeats
-log_power_low_gamma_std,low-gamma log power — context variability,0.22214254740946848,0.011641846594754979,2.964494920643732,2
-log_rms_mean,log RMS amplitude — context mean,0.17389983932198838,0.026292340087093358,2.964494920643732,2
-relative_low_gamma_mean,low-gamma relative power — context mean,0.1606873298714544,0.02772497855186673,2.964494920643732,2
-log_power_alpha_mean,alpha log power — context mean,0.07778257796169141,0.018974508933048195,2.964494920643732,2
-log_line_length_mean,log line length — context mean,0.07249055348197064,0.022513774089155003,2.964494920643732,2
-log_rms_std,log RMS amplitude — context variability,0.06728934757097482,0.009243827659701775,2.964494920643732,2
-relative_alpha_std,alpha relative power — context variability,0.06645105340919244,0.011759822054351776,2.964494920643732,2
-log_power_theta_mean,theta log power — context mean,0.0646570940735478,0.0038268088059452143,2.964494920643732,2
-usable_channel_fraction_std,usable-channel fraction — context variability,0.06195169639686848,0.0038738758783083416,2.964494920643732,2
-log_power_delta_mean,delta log power — context mean,0.05994215608090836,0.023637429749647554,2.964494920643732,2
-usable_channel_fraction_mean,usable-channel fraction — context mean,0.05185037975155948,0.027255935373276863,2.964494920643732,2
-spectral_entropy_mean,spectral entropy — context mean,0.04761978371327924,0.0013304141265457758,2.964494920643732,2
-relative_delta_mean,delta relative power — context mean,0.046196459228682984,0.007462212663126744,2.964494920643732,2
-usable_channel_fraction_slope,usable-channel fraction — two-minute trend,0.038839131163945106,0.014308488361892246,2.964494920643732,2
-relative_beta_mean,beta relative power — context mean,0.03538638574137365,0.0022130138307068226,2.964494920643732,2
-relative_low_gamma_slope,low-gamma relative power — two-minute trend,0.023650478801519048,0.0007702548417325428,2.964494920643732,2
-relative_theta_slope,theta relative power — two-minute trend,0.017632919957102144,0.0014773436326891431,2.964494920643732,2
-log_power_alpha_slope,alpha log power — two-minute trend,0.017170326890491916,0.00211512388811097,2.964494920643732,2
-log_line_length_std,log line length — context variability,0.01711576697452588,0.002125861642793714,2.964494920643732,2
-log_power_beta_std,beta log power — context variability,0.014631393185649655,0.00041996149462053545,2.964494920643732,2
-log_power_theta_std,theta log power — context variability,0.01072820266247465,0.003364972775238506,2.964494920643732,2
-spectral_entropy_std,spectral entropy — context variability,0.006045826883309013,0.0028591109812199367,2.964494920643732,2
-spectral_entropy_slope,spectral entropy — two-minute trend,0.005237148367068789,0.001335146689040334,2.964494920643732,2
-log_power_alpha_std,alpha log power — context variability,0.004722520118215723,0.003881785715031949,2.964494920643732,2
-relative_delta_slope,delta relative power — two-minute trend,0.003743887562539072,0.0010742489891732987,2.964494920643732,2
-log_rms_slope,log RMS amplitude — two-minute trend,0.00227011667722099,0.0015013572915725248,2.964494920643732,2
-log_power_low_gamma_slope,low-gamma log power — two-minute trend,0.0014817774207305234,0.0001555179997390077,2.964494920643732,2
-log_power_low_gamma_last,low-gamma log power — most recent interval,0.001144831364399801,0.000306226460776271,2.964494920643732,2
-log_power_theta_last,theta log power — most recent interval,0.0006809959679845434,0.00022610523189037224,2.964494920643732,2
-relative_alpha_slope,alpha relative power — two-minute trend,0.0006782922455517149,0.0007762064489005294,2.964494920643732,2
-log_power_delta_last,delta log power — most recent interval,2.058235300617106e-05,6.56885517369421e-05,2.964494920643732,2
-log_power_alpha_last,alpha log power — most recent interval,0.0,0.0,2.964494920643732,2
-relative_alpha_last,alpha relative power — most recent interval,0.0,0.0,2.964494920643732,2
-relative_low_gamma_last,low-gamma relative power — most recent interval,0.0,0.0,2.964494920643732,2
-relative_beta_last,beta relative power — most recent interval,0.0,0.0,2.964494920643732,2
-relative_theta_last,theta relative power — most recent interval,0.0,0.0,2.964494920643732,2
-usable_channel_fraction_last,usable-channel fraction — most recent interval,0.0,0.0,2.964494920643732,2
-spectral_entropy_last,spectral entropy — most recent interval,0.0,0.0,2.964494920643732,2
-log_power_beta_last,beta log power — most recent interval,-5.3296293513804827e-05,2.4839376979501893e-05,2.964494920643732,2
-relative_delta_last,delta relative power — most recent interval,-9.818803773953277e-05,9.818803773953277e-05,2.964494920643732,2
-log_power_beta_slope,beta log power — two-minute trend,-0.00012963292002732274,0.0006277701508872191,2.964494920643732,2
-log_rms_last,log RMS amplitude — most recent interval,-0.0006084324037110012,0.00017483613231061845,2.964494920643732,2
-log_power_delta_slope,delta log power — two-minute trend,-0.001057990645226159,0.0019691243915969103,2.964494920643732,2
-relative_low_gamma_std,low-gamma relative power — context variability,-0.004663433850814691,0.0002982955461838799,2.964494920643732,2
-log_power_low_gamma_mean,low-gamma log power — context mean,-0.0059283656167430365,0.0008577853304059246,2.964494920643732,2
-log_line_length_last,log line length — most recent interval,-0.006966818745167469,0.0006781415381786893,2.964494920643732,2
-relative_alpha_mean,alpha relative power — context mean,-0.007584996921108145,0.009515304559405413,2.964494920643732,2
-relative_beta_slope,beta relative power — two-minute trend,-0.00918740646953542,0.005444473467239197,2.964494920643732,2
-log_power_theta_slope,theta log power — two-minute trend,-0.011371976689252827,0.00026421968127787743,2.964494920643732,2
-relative_beta_std,beta relative power — context variability,-0.012897146994266473,0.007270404469099434,2.964494920643732,2
-log_line_length_slope,log line length — two-minute trend,-0.018844673998932082,6.936422810599474e-05,2.964494920643732,2
-log_power_delta_std,delta log power — context variability,-0.019750933087233635,0.001876367638360188,2.964494920643732,2
-relative_theta_mean,theta relative power — context mean,-0.03357083521761539,0.005190753510598833,2.964494920643732,2
-log_power_beta_mean,beta log power — context mean,-0.04620969694149668,0.002858202310647595,2.964494920643732,2
-relative_delta_std,delta relative power — context variability,-0.0667448496221319,0.004110844813762116,2.964494920643732,2
-relative_theta_std,theta relative power — context variability,-0.22697488485068162,0.01896109774229493,2.964494920643732,2
+log_line_length_channel_p90_std,log line length channel p90 — context variability,0.03198134098961625,0.004968649324756824,1.443973908016995,2
+hjorth_complexity_channel_p90_std,hjorth complexity channel p90 — context variability,0.02911943295505892,0.0023007692688453707,1.443973908016995,2
+zero_crossing_rate_channel_iqr_mean,zero crossing rate channel iqr — context mean,0.00855035266832449,0.00033648206267911096,1.443973908016995,2
+log_line_length_channel_iqr_mean,log line length channel iqr — context mean,0.00839186480701759,0.00047889675035284185,1.443973908016995,2
+hjorth_mobility_channel_iqr_std,hjorth mobility channel iqr — context variability,0.0026361150853755344,0.0016436153696464118,1.443973908016995,2
+log_line_length_channel_iqr_last,log line length channel iqr — most recent interval,0.001999908007401685,0.0011676075961705168,1.443973908016995,2
+log_robust_range_channel_iqr_slope,log robust range channel iqr — two-minute trend,0.0016895337292729407,0.0009151214532240326,1.443973908016995,2
+hjorth_mobility_channel_iqr_slope,hjorth mobility channel iqr — two-minute trend,0.0014085269327874794,0.001155125047129335,1.443973908016995,2
+log_rms_channel_iqr_slope,log rms channel iqr — two-minute trend,0.0013339472237693384,0.0012007764012201827,1.443973908016995,2
+log_rms_channel_p90_slope,log rms channel p90 — two-minute trend,0.0012867028445211481,0.000359518887636856,1.443973908016995,2
+hjorth_mobility_mean,Hjorth mobility — context mean,0.001089408537766623,0.0007997049920327459,1.443973908016995,2
+log_mad_channel_iqr_slope,log mad channel iqr — two-minute trend,0.0010681349165945209,0.00010080515733712492,1.443973908016995,2
+zero_crossing_rate_channel_iqr_slope,zero crossing rate channel iqr — two-minute trend,0.0009844213851153416,0.0002942688172373753,1.443973908016995,2
+log_line_length_channel_iqr_slope,log line length channel iqr — two-minute trend,0.0008473161506573623,0.0013223368871652097,1.443973908016995,2
+log_mad_channel_p90_slope,log mad channel p90 — two-minute trend,0.0008007178881003219,0.00046198956282383907,1.443973908016995,2
+log_line_length_std,log line length — context variability,0.000800547902811366,0.0006046265339222368,1.443973908016995,2
+median_absolute_channel_correlation_slope,median absolute channel correlation — two-minute trend,0.0007722832712548922,0.00010581554084265754,1.443973908016995,2
+hjorth_mobility_channel_p90_last,hjorth mobility channel p90 — most recent interval,0.0005731547322453956,3.115624276084361e-05,1.443973908016995,2
+log_robust_range_channel_p90_last,log robust range channel p90 — most recent interval,0.00047609506451096184,9.033033438243798e-06,1.443973908016995,2
+log_robust_range_channel_p90_slope,log robust range channel p90 — two-minute trend,0.0004326295940282332,0.0003169150005246646,1.443973908016995,2
+hjorth_complexity_channel_iqr_slope,hjorth complexity channel iqr — two-minute trend,0.0003438187064872533,1.6716255933912905e-05,1.443973908016995,2
+log_rms_channel_p90_last,log rms channel p90 — most recent interval,0.0003151536638422714,0.00010439956570762465,1.443973908016995,2
+hjorth_complexity_channel_p90_mean,hjorth complexity channel p90 — context mean,0.00018900220027284753,9.415022389736016e-05,1.443973908016995,2
+hjorth_mobility_slope,Hjorth mobility — two-minute trend,0.00017532872891290463,2.6478206598068432e-05,1.443973908016995,2
+hjorth_complexity_channel_iqr_last,hjorth complexity channel iqr — most recent interval,0.00017501518880658207,0.0004822270513032967,1.443973908016995,2
+hjorth_mobility_std,Hjorth mobility — context variability,0.00017394297778405843,0.0009400205771779024,1.443973908016995,2
+log_mad_channel_iqr_last,log mad channel iqr — most recent interval,0.00010244319317986861,0.00020825843088478901,1.443973908016995,2
+usable_channel_fraction_last,usable-channel fraction — most recent interval,6.994467575660579e-05,7.161641449449085e-05,1.443973908016995,2
+log_rms_slope,log RMS amplitude — two-minute trend,-7.639697047312488e-06,8.448812610917233e-05,1.443973908016995,2
+zero_crossing_rate_channel_iqr_last,zero crossing rate channel iqr — most recent interval,-2.7891692864545625e-05,0.0011978202956056672,1.443973908016995,2
+zero_crossing_rate_mean,zero-crossing rate — context mean,-4.922914907401488e-05,0.00017738433726155467,1.443973908016995,2
+log_robust_range_channel_iqr_std,log robust range channel iqr — context variability,-7.527174145049997e-05,9.523166620217793e-05,1.443973908016995,2
+log_robust_range_channel_iqr_mean,log robust range channel iqr — context mean,-8.48696404341931e-05,0.0006185091449103508,1.443973908016995,2
+hjorth_complexity_channel_iqr_mean,hjorth complexity channel iqr — context mean,-9.479945906110121e-05,0.00036019793380204224,1.443973908016995,2
+zero_crossing_rate_channel_p90_std,zero crossing rate channel p90 — context variability,-0.00015151749913355772,0.0011363169121287875,1.443973908016995,2
+hjorth_mobility_channel_iqr_last,hjorth mobility channel iqr — most recent interval,-0.00016221771470215085,6.573954863420273e-05,1.443973908016995,2
+usable_channel_fraction_slope,usable-channel fraction — two-minute trend,-0.00019544465831888846,4.0323265350084014e-06,1.443973908016995,2
+log_rms_last,log RMS amplitude — most recent interval,-0.00023475269435846435,0.00019577322399033648,1.443973908016995,2
+log_robust_range_slope,log robust peak-to-peak range — two-minute trend,-0.0002729922464890233,0.0002610339881079504,1.443973908016995,2
+hjorth_complexity_channel_p90_last,hjorth complexity channel p90 — most recent interval,-0.0003400696714599416,0.00014711950984658273,1.443973908016995,2
+log_robust_range_channel_iqr_last,log robust range channel iqr — most recent interval,-0.0003599065770529819,0.00035210237683225287,1.443973908016995,2
+log_line_length_channel_iqr_std,log line length channel iqr — context variability,-0.0003662617295546733,0.004856247610044995,1.443973908016995,2
+log_rms_channel_iqr_std,log rms channel iqr — context variability,-0.0004125983067502226,0.0015311014330867678,1.443973908016995,2
+zero_crossing_rate_channel_iqr_std,zero crossing rate channel iqr — context variability,-0.000430141599118139,0.0005879395628010098,1.443973908016995,2
+log_robust_range_std,log robust peak-to-peak range — context variability,-0.00047363151186408103,0.0008626581218524887,1.443973908016995,2
+hjorth_mobility_channel_p90_mean,hjorth mobility channel p90 — context mean,-0.0005881540952749065,0.0005369475809614555,1.443973908016995,2
+log_line_length_channel_p90_last,log line length channel p90 — most recent interval,-0.0006464621490701594,1.849772603923494e-05,1.443973908016995,2
+hjorth_complexity_mean,Hjorth complexity — context mean,-0.0006682216367267513,0.0025785853884704446,1.443973908016995,2
+log_line_length_channel_p90_mean,log line length channel p90 — context mean,-0.0006698429932315841,0.00042881998575039493,1.443973908016995,2
+hjorth_mobility_last,Hjorth mobility — most recent interval,-0.0006823306177965449,0.0009641966911990707,1.443973908016995,2
+log_rms_channel_iqr_last,log rms channel iqr — most recent interval,-0.0011690776805155512,0.0004671103120117426,1.443973908016995,2
+zero_crossing_rate_channel_p90_mean,zero crossing rate channel p90 — context mean,-0.0012030505707533168,0.0004659988301390916,1.443973908016995,2
+hjorth_mobility_channel_iqr_mean,hjorth mobility channel iqr — context mean,-0.0013362901382479864,0.0010950367085057477,1.443973908016995,2
+log_rms_mean,log RMS amplitude — context mean,-0.0013414238397979616,5.316245132580555e-05,1.443973908016995,2
+median_absolute_channel_correlation_std,median absolute channel correlation — context variability,-0.001356650331963749,0.0014105815326941329,1.443973908016995,2
+hjorth_complexity_last,Hjorth complexity — most recent interval,-0.0016939749622375544,0.0011649002755689253,1.443973908016995,2
+zero_crossing_rate_channel_p90_last,zero crossing rate channel p90 — most recent interval,-0.0018109483979696916,0.0005563293032261329,1.443973908016995,2
+log_mad_slope,log robust amplitude — two-minute trend,-0.002008318734398884,4.180209008319835e-05,1.443973908016995,2
+zero_crossing_rate_last,zero-crossing rate — most recent interval,-0.002142134340187729,0.0014466802771804232,1.443973908016995,2
+log_robust_range_last,log robust peak-to-peak range — most recent interval,-0.002206387420795486,0.00010101455090338884,1.443973908016995,2
+log_mad_channel_p90_last,log mad channel p90 — most recent interval,-0.0026827076998006127,0.00038419250451893205,1.443973908016995,2
+log_mad_channel_iqr_mean,log mad channel iqr — context mean,-0.0027709281886697523,0.003501083328845467,1.443973908016995,2
+log_rms_std,log RMS amplitude — context variability,-0.0028012394680556607,7.366920719342751e-05,1.443973908016995,2
+log_robust_range_mean,log robust peak-to-peak range — context mean,-0.002808711694299637,0.0019030280712746261,1.443973908016995,2
+log_line_length_channel_p90_slope,log line length channel p90 — two-minute trend,-0.0028997554967189476,0.0001702722305527704,1.443973908016995,2
+median_absolute_channel_correlation_last,median absolute channel correlation — most recent interval,-0.0030821125701908647,0.0033017047536570976,1.443973908016995,2
+log_mad_last,log robust amplitude — most recent interval,-0.0032604650646415045,0.0006902619410744659,1.443973908016995,2
+log_line_length_slope,log line length — two-minute trend,-0.003362903882417778,0.00023428352939525166,1.443973908016995,2
+log_mad_mean,log robust amplitude — context mean,-0.0037105398481771523,0.001833186511666085,1.443973908016995,2
+usable_channel_fraction_mean,usable-channel fraction — context mean,-0.0038296075302101107,0.002679200776306234,1.443973908016995,2
+log_robust_range_channel_p90_mean,log robust range channel p90 — context mean,-0.004003379495392978,0.0004466016282863583,1.443973908016995,2
+zero_crossing_rate_slope,zero-crossing rate — two-minute trend,-0.004321414386952549,2.549094215487102e-06,1.443973908016995,2
+usable_channel_fraction_std,usable-channel fraction — context variability,-0.0049503315480011745,0.0019618942466205214,1.443973908016995,2
+log_line_length_last,log line length — most recent interval,-0.005124767554324561,0.0014254996404318154,1.443973908016995,2
+log_mad_channel_p90_mean,log mad channel p90 — context mean,-0.005732854682753641,0.00032596785203076184,1.443973908016995,2
+log_rms_channel_p90_mean,log rms channel p90 — context mean,-0.005879037995038527,0.0012671821447153286,1.443973908016995,2
+hjorth_mobility_channel_p90_slope,hjorth mobility channel p90 — two-minute trend,-0.006203756926688508,0.0004346712386990026,1.443973908016995,2
+log_rms_channel_iqr_mean,log rms channel iqr — context mean,-0.006791752418014219,0.0020234911698912006,1.443973908016995,2
+log_line_length_mean,log line length — context mean,-0.007268546128074038,0.0005846440011975096,1.443973908016995,2
+hjorth_complexity_slope,Hjorth complexity — two-minute trend,-0.007288774131408382,0.0004494908439768297,1.443973908016995,2
+hjorth_mobility_channel_p90_std,hjorth mobility channel p90 — context variability,-0.009641444014469314,0.002536105498047392,1.443973908016995,2
+median_absolute_channel_correlation_mean,median absolute channel correlation — context mean,-0.010925489254907883,0.00010218848649523604,1.443973908016995,2
+log_mad_std,log robust amplitude — context variability,-0.010997318241814824,0.0002622393891311692,1.443973908016995,2
+zero_crossing_rate_channel_p90_slope,zero crossing rate channel p90 — two-minute trend,-0.011858828924610099,0.0009738576535497367,1.443973908016995,2
+zero_crossing_rate_std,zero-crossing rate — context variability,-0.014713889494111676,0.001025625256587448,1.443973908016995,2
+hjorth_complexity_channel_iqr_std,hjorth complexity channel iqr — context variability,-0.017417811593126276,0.005429777137162972,1.443973908016995,2
+log_mad_channel_p90_std,log mad channel p90 — context variability,-0.01982966619793536,0.002799024988207721,1.443973908016995,2
+log_mad_channel_iqr_std,log mad channel iqr — context variability,-0.021741942597158337,0.0014509793451595865,1.443973908016995,2
+hjorth_complexity_std,Hjorth complexity — context variability,-0.023653455610846974,0.004771648443130827,1.443973908016995,2
+hjorth_complexity_channel_p90_slope,hjorth complexity channel p90 — two-minute trend,-0.028650927027333628,0.00048018606273703135,1.443973908016995,2
+log_robust_range_channel_p90_std,log robust range channel p90 — context variability,-0.046475990727538385,0.0005745598492107318,1.443973908016995,2
+log_rms_channel_p90_std,log rms channel p90 — context variability,-0.05403823058597179,0.0016680771896145918,1.443973908016995,2
