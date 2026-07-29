@@ -21,6 +21,7 @@ from typing import Any, Iterable
 from concurrent.futures import ThreadPoolExecutor
 import json
 import math
+import re
 import time
 import warnings
 
@@ -33,13 +34,16 @@ from sklearn.linear_model import SGDClassifier
 from sklearn.ensemble import ExtraTreesClassifier
 from sklearn.exceptions import ConvergenceWarning
 from sklearn.metrics import average_precision_score, roc_auc_score
-from sklearn.model_selection import GroupShuffleSplit
+from sklearn.model_selection import (
+    GroupShuffleSplit,
+    StratifiedGroupKFold,
+)
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 
 
-MODULE_VERSION = "6.1.0"
-FEATURE_CACHE_VERSION = "6.0.0"
+MODULE_VERSION = "8.1.0"
+FEATURE_CACHE_VERSION = "7.0.0"
 BIN_SECONDS = 5
 HORIZON_SECONDS = 300
 CONTEXT_SECONDS = 120
@@ -48,6 +52,39 @@ INTERICTAL_BUFFER_SECONDS = 300
 TARGET_SAMPLE_RATE = 64
 RANDOM_SEED = 42
 MIN_EEG_CHANNELS = 8
+CANONICAL_EEG_CHANNELS = (
+    "FP1",
+    "F3",
+    "C3",
+    "P3",
+    "O1",
+    "F7",
+    "T3",
+    "T5",
+    "FC1",
+    "FC5",
+    "CP1",
+    "CP5",
+    "F9",
+    "FZ",
+    "CZ",
+    "PZ",
+    "F4",
+    "C4",
+    "P4",
+    "O2",
+    "F8",
+    "T4",
+    "T6",
+    "FC2",
+    "FC6",
+    "CP2",
+    "CP6",
+    "F10",
+    "FP2",
+    "P9",
+    "P10",
+)
 
 CHANNEL_BASE_FEATURE_NAMES = (
     "log_rms",
@@ -90,14 +127,17 @@ REQUESTED_SEIZURE_SPLITS: dict[str, dict[str, int]] = {
         "PN06": 4,
         "PN07": 1,
         "PN09": 2,
-        "PN10": 8,
+        "PN10": 9,
         "PN11": 1,
         "PN12": 3,
         "PN13": 2,
-        "PN14": 3,
-        "PN16": 1,
+        "PN14": 4,
+        "PN16": 2,
+        "PN17": 1,
     },
-    "validation": {"PN10": 1, "PN14": 1, "PN16": 1, "PN17": 1},
+    # Kept as an explicit empty key for backward-compatible allocation files.
+    # Model and alarm selection use grouped out-of-fold train predictions.
+    "validation": {},
     "test": {
         "PN00": 1,
         "PN05": 1,
@@ -109,6 +149,17 @@ REQUESTED_SEIZURE_SPLITS: dict[str, dict[str, int]] = {
         "PN17": 1,
     },
 }
+
+FIXED_TEST_SOURCE_EVENT_IDS = (
+    "PN00_S01",
+    "PN05_S03",
+    "PN06_S04",
+    "PN09_S03",
+    "PN10_S08",
+    "PN12_S01",
+    "PN13_S01",
+    "PN17_S02",
+)
 
 
 @dataclass(frozen=True)
@@ -122,10 +173,12 @@ class ForecastConfig:
     interictal_buffer_seconds: int = INTERICTAL_BUFFER_SECONDS
     target_sample_rate: int = TARGET_SAMPLE_RATE
     min_eeg_channels: int = MIN_EEG_CHANNELS
+    included_eeg_channels: tuple[str, ...] | None = None
     random_seed: int = RANDOM_SEED
     test_fraction: float = 0.25
     warning_time_target: float = 0.25
-    minimum_development_sensitivity: float = 0.90
+    minimum_development_sensitivity: float | None = None
+    false_alarm_target_per_hour: float = 5.0
     interictal_controls_per_seizure: int = 4
     alarm_on_consecutive: int = 2
     # At five-second landmarks, 13 low-risk readings are 65 seconds: strictly
@@ -157,6 +210,28 @@ class ForecastConfig:
 
         return self.pre_onset_steps + 1
 
+    @property
+    def selected_eeg_channels(self) -> tuple[str, ...] | None:
+        """Canonical selected channels, or None for legacy all-available mode."""
+
+        if self.included_eeg_channels is None:
+            return None
+        return tuple(
+            canonical_eeg_channel_name(channel)
+            for channel in self.included_eeg_channels
+        )
+
+    @property
+    def effective_min_eeg_channels(self) -> int:
+        """Quality threshold capped by the number explicitly selected."""
+
+        selected = self.selected_eeg_channels
+        return (
+            self.min_eeg_channels
+            if selected is None
+            else min(self.min_eeg_channels, len(selected))
+        )
+
     def validate(self) -> None:
         if self.bin_seconds <= 0:
             raise ValueError("bin_seconds must be positive.")
@@ -186,15 +261,37 @@ class ForecastConfig:
             )
         if self.min_eeg_channels <= 0:
             raise ValueError("min_eeg_channels must be positive.")
+        selected = self.selected_eeg_channels
+        if selected is not None:
+            if not selected:
+                raise ValueError(
+                    "included_eeg_channels must select at least one channel."
+                )
+            if len(set(selected)) != len(selected):
+                raise ValueError(
+                    "included_eeg_channels contains duplicate canonical names."
+                )
+            unknown = sorted(set(selected) - set(CANONICAL_EEG_CHANNELS))
+            if unknown:
+                raise ValueError(
+                    "Unknown included EEG channels: " + ", ".join(unknown)
+                )
         if self.max_iter <= 0:
             raise ValueError("max_iter must be positive.")
         if not 0 < self.test_fraction < 1:
             raise ValueError("test_fraction must be in (0, 1).")
         if not 0 <= self.warning_time_target <= 1:
             raise ValueError("warning_time_target must be in [0, 1].")
-        if not 0 <= self.minimum_development_sensitivity <= 1:
+        if (
+            self.minimum_development_sensitivity is not None
+            and not 0 <= self.minimum_development_sensitivity <= 1
+        ):
             raise ValueError(
                 "minimum_development_sensitivity must be in [0, 1]."
+            )
+        if self.false_alarm_target_per_hour < 0:
+            raise ValueError(
+                "false_alarm_target_per_hour must be nonnegative."
             )
         if self.interictal_controls_per_seizure <= 0:
             raise ValueError("interictal_controls_per_seizure must be positive.")
@@ -211,7 +308,57 @@ class TwoStageForecastModel:
     timing_model: Any
     risk_model: Any
     risk_feature_columns: tuple[str, ...]
-    smoothing_alpha: float = 0.10
+    smoothing_alpha: float = 1.0
+    feature_medians: np.ndarray | None = None
+    feature_scales: np.ndarray | None = None
+    patient_feature_medians: dict[str, np.ndarray] | None = None
+    patient_feature_scales: dict[str, np.ndarray] | None = None
+    normalization_mode: str = "legacy"
+    risk_model_name: str = "Extra Trees"
+    risk_cv_auroc: float = float("nan")
+    risk_oof_predictions: np.ndarray | None = None
+    warning_policy: dict[str, float | int] | None = None
+
+
+@dataclass
+class CrossFittedRiskComponent:
+    """One fold model and the training-only normalization it requires."""
+
+    estimator: Any
+    feature_medians: np.ndarray
+    feature_scales: np.ndarray
+    patient_feature_medians: dict[str, np.ndarray]
+    patient_feature_scales: dict[str, np.ndarray]
+
+
+@dataclass
+class CrossFittedRiskEnsemble:
+    """Average risk from models trained on complementary development folds."""
+
+    components: tuple[CrossFittedRiskComponent, ...]
+    normalization_mode: str
+
+    def predict_feature_proba(
+        self,
+        frame: pd.DataFrame | None,
+        base: np.ndarray,
+    ) -> np.ndarray:
+        probabilities = []
+        for component in self.components:
+            design = _normalized_risk_design(
+                frame,
+                base,
+                component.feature_medians,
+                component.feature_scales,
+                component.patient_feature_medians,
+                component.patient_feature_scales,
+                self.normalization_mode,
+            )
+            probabilities.append(
+                component.estimator.predict_proba(design)[:, 1]
+            )
+        mean_positive = np.mean(np.vstack(probabilities), axis=0)
+        return np.column_stack([1.0 - mean_positive, mean_positive])
 
 
 def project_paths(start: str | Path | None = None) -> dict[str, Path]:
@@ -291,6 +438,33 @@ def _resolve_edf(raw_dir: Path, patient_id: str, recording: str) -> Path:
     )
 
 
+def rebase_manifest_edf_paths(
+    manifest: pd.DataFrame,
+    raw_dir: str | Path,
+) -> pd.DataFrame:
+    """Resolve cached machine-specific EDF paths without changing episodes."""
+
+    required = {"patient_id", "recording", "edf_path"}
+    missing = sorted(required - set(manifest.columns))
+    if missing:
+        raise ValueError(f"Manifest is missing EDF path columns: {missing}")
+    result = manifest.copy()
+    resolved: dict[tuple[str, str], str] = {}
+    for index, row in result.iterrows():
+        current = Path(str(row["edf_path"]))
+        if current.exists():
+            resolved_path = current.resolve()
+        else:
+            key = (str(row["patient_id"]), str(row["recording"]))
+            if key not in resolved:
+                resolved[key] = str(
+                    _resolve_edf(Path(raw_dir), key[0], key[1]).resolve()
+                )
+            resolved_path = Path(resolved[key])
+        result.at[index, "edf_path"] = str(resolved_path)
+    return result
+
+
 def edf_metadata(path: str | Path) -> dict[str, Any]:
     """Read EDF metadata without loading the complete recording."""
 
@@ -313,10 +487,90 @@ def edf_metadata(path: str | Path) -> dict[str, Any]:
         reader.close()
 
 
+def eeg_channel_availability(
+    edf_paths: Iterable[str | Path],
+) -> pd.DataFrame:
+    """Summarize canonical EEG channel presence across unique EDF files."""
+
+    unique_paths = sorted({str(Path(path).resolve()) for path in edf_paths})
+    counts = {channel: 0 for channel in CANONICAL_EEG_CHANNELS}
+    for path in unique_paths:
+        labels = edf_metadata(path)["labels"]
+        present = {
+            canonical_eeg_channel_name(label)
+            for label in labels
+            if _is_eeg_label(label)
+        }
+        for channel in counts:
+            counts[channel] += int(channel in present)
+    return pd.DataFrame(
+        {
+            "channel": list(CANONICAL_EEG_CHANNELS),
+            "files_available": [
+                counts[channel] for channel in CANONICAL_EEG_CHANNELS
+            ],
+            "total_files": len(unique_paths),
+        }
+    )
+
+
 def _is_eeg_label(label: str) -> bool:
     upper = label.upper().replace("-", " ").strip()
     excluded = ("EKG", "ECG", "SPO2", "STATUS", "EVENT", "EMG", "RESP")
     return upper.startswith("EEG") and not any(token in upper for token in excluded)
+
+
+def canonical_eeg_channel_name(label: str) -> str:
+    """Normalize EDF labels such as ``EEG Fp2`` and ``EEG CZ`` to one name."""
+
+    text = str(label).strip().upper()
+    text = re.sub(r"^EEG[\s:_-]*", "", text)
+    text = re.sub(r"[\s:_-]*(REF|LE|RE|AVG)$", "", text)
+    canonical = re.sub(r"[^A-Z0-9]", "", text)
+    if not canonical:
+        raise ValueError(f"Cannot canonicalize EEG channel label {label!r}.")
+    return canonical
+
+
+def _select_eeg_channel_indices(
+    labels: list[str],
+    included_channels: Iterable[str] | None,
+) -> tuple[list[int], list[str]]:
+    """Return EDF indices in requested canonical order with strict validation."""
+
+    recognized: dict[str, int] = {}
+    ordered_available: list[str] = []
+    for index, label in enumerate(labels):
+        if not _is_eeg_label(label):
+            continue
+        canonical = canonical_eeg_channel_name(label)
+        if canonical in recognized:
+            raise ValueError(
+                f"EDF contains duplicate canonical EEG channel {canonical}."
+            )
+        recognized[canonical] = index
+        ordered_available.append(canonical)
+    if included_channels is None:
+        selected = ordered_available
+    else:
+        selected = [
+            canonical_eeg_channel_name(channel)
+            for channel in included_channels
+        ]
+        if len(set(selected)) != len(selected):
+            raise ValueError("Selected EEG channels contain duplicates.")
+        unknown = sorted(set(selected) - set(CANONICAL_EEG_CHANNELS))
+        if unknown:
+            raise ValueError(
+                "Unknown selected EEG channels: " + ", ".join(unknown)
+            )
+        missing = [channel for channel in selected if channel not in recognized]
+        if missing:
+            raise ValueError(
+                "Selected EEG channels are missing from this EDF: "
+                + ", ".join(missing)
+            )
+    return [recognized[channel] for channel in selected], selected
 
 
 def read_edf_eeg_segment(
@@ -324,6 +578,7 @@ def read_edf_eeg_segment(
     start_seconds: float,
     duration_seconds: float,
     min_channels: int = MIN_EEG_CHANNELS,
+    included_channels: Iterable[str] | None = None,
 ) -> tuple[np.ndarray, float, list[str]]:
     """Random-access a scaled multichannel EEG interval from an EDF file."""
 
@@ -333,10 +588,13 @@ def read_edf_eeg_segment(
     reader = pyedflib.EdfReader(str(path))
     try:
         labels = [str(label).strip() for label in reader.getSignalLabels()]
-        eeg_indices = [i for i, label in enumerate(labels) if _is_eeg_label(label)]
+        eeg_indices, selected_labels = _select_eeg_channel_indices(
+            labels, included_channels
+        )
         if len(eeg_indices) < min_channels:
             raise ValueError(
-                f"{path.name} has only {len(eeg_indices)} recognized EEG channels."
+                f"{path.name} has only {len(eeg_indices)} selected EEG channels; "
+                f"at least {min_channels} are required."
             )
         rates = np.asarray(
             [reader.getSampleFrequency(i) for i in eeg_indices], dtype=float
@@ -344,11 +602,31 @@ def read_edf_eeg_segment(
         rounded_rates = np.round(rates, 6)
         values, counts = np.unique(rounded_rates, return_counts=True)
         sample_rate = float(values[np.argmax(counts)])
+        rate_pairs = list(
+            zip(eeg_indices, selected_labels, rounded_rates, strict=True)
+        )
         eeg_indices = [
             index
-            for index, rate in zip(eeg_indices, rounded_rates, strict=True)
+            for index, _, rate in rate_pairs
             if math.isclose(float(rate), sample_rate, rel_tol=0, abs_tol=1e-6)
         ]
+        selected_labels = [
+            channel
+            for _, channel, rate in rate_pairs
+            if math.isclose(float(rate), sample_rate, rel_tol=0, abs_tol=1e-6)
+        ]
+        if included_channels is not None and len(eeg_indices) != len(rate_pairs):
+            off_rate = [
+                channel
+                for _, channel, rate in rate_pairs
+                if not math.isclose(
+                    float(rate), sample_rate, rel_tol=0, abs_tol=1e-6
+                )
+            ]
+            raise ValueError(
+                "Selected EEG channels do not share the modal sample rate: "
+                + ", ".join(off_rate)
+            )
         if len(eeg_indices) < min_channels:
             raise ValueError(
                 f"{path.name} has fewer than {min_channels} EEG channels at one rate."
@@ -370,7 +648,7 @@ def read_edf_eeg_segment(
         ]
         if any(len(values_) != sample_count for values_ in arrays):
             raise ValueError(f"Incomplete EDF read from {path.name}.")
-        return np.vstack(arrays), sample_rate, [labels[i] for i in eeg_indices]
+        return np.vstack(arrays), sample_rate, selected_labels
     finally:
         reader.close()
 
@@ -397,7 +675,8 @@ def _micro_window_features(
     # Median centering is substantially faster and less outlier-sensitive than
     # fitting a linear trend independently in every channel and interval.
     window = window - np.nanmedian(window, axis=1, keepdims=True)
-    window = window - np.nanmedian(window, axis=0, keepdims=True)
+    if window.shape[0] > 1:
+        window = window - np.nanmedian(window, axis=0, keepdims=True)
     keep = _quality_mask(window)
     if int(keep.sum()) < min_channels:
         raise ValueError(
@@ -453,12 +732,15 @@ def _micro_window_features(
     # Correlation is calculated on a fourfold temporal subsample for speed.
     # The median absolute off-diagonal value is a robust synchrony descriptor
     # and contains no frequency-band or FFT information.
-    correlation = np.corrcoef(window[:, ::4])
-    upper = correlation[np.triu_indices_from(correlation, k=1)]
-    finite_upper = np.abs(upper[np.isfinite(upper)])
-    median_correlation = (
-        float(np.median(finite_upper)) if len(finite_upper) else 0.0
-    )
+    if len(window) > 1:
+        correlation = np.corrcoef(window[:, ::4])
+        upper = correlation[np.triu_indices_from(correlation, k=1)]
+        finite_upper = np.abs(upper[np.isfinite(upper)])
+        median_correlation = (
+            float(np.median(finite_upper)) if len(finite_upper) else 0.0
+        )
+    else:
+        median_correlation = 0.0
     return np.r_[
         distribution_features,
         median_correlation,
@@ -502,7 +784,7 @@ def segment_micro_features(
                 data[:, start:stop],
                 sample_rate,
                 total_channel_count=data.shape[0],
-                min_channels=config.min_eeg_channels,
+                min_channels=config.effective_min_eeg_channels,
             )
         )
     result = np.vstack(features)
@@ -830,7 +1112,8 @@ def _episode_landmarks(
         episode["edf_path"],
         read_start,
         read_duration,
-        min_channels=config.min_eeg_channels,
+        min_channels=config.effective_min_eeg_channels,
+        included_channels=config.selected_eeg_channels,
     )
     micro = segment_micro_features(data, sample_rate, config)
     expected_micro_rows = (
@@ -927,9 +1210,15 @@ def _cache_signature(
     signature_manifest = signature_manifest.where(
         pd.notna(signature_manifest), None
     )
+    signature_config = asdict(config)
+    signature_config["included_eeg_channels"] = (
+        list(config.selected_eeg_channels)
+        if config.selected_eeg_channels is not None
+        else None
+    )
     return {
         "module_version": FEATURE_CACHE_VERSION,
-        "config": asdict(config),
+        "config": signature_config,
         "manifest": signature_manifest.to_dict(orient="records"),
     }
 
@@ -950,6 +1239,7 @@ def _feature_signature_matches(
         "pre_onset_seconds",
         "target_sample_rate",
         "min_eeg_channels",
+        "included_eeg_channels",
     }
 
     def canonical(signature: dict[str, Any]) -> dict[str, Any]:
@@ -959,9 +1249,45 @@ def _feature_signature_matches(
             for key, value in signature.get("config", {}).items()
             if key in data_fields
         }
+        # The signal features and targets are properties of an episode, not of
+        # the split to which it is assigned. Ignoring this metadata lets a new
+        # train/validation allocation reuse the exact same extracted features.
+        result["manifest"] = [
+            {
+                key: value
+                for key, value in record.items()
+                if key != "dataset_split"
+            }
+            for record in signature.get("manifest", [])
+        ]
         return result
 
     return canonical(cached_signature) == canonical(current_signature)
+
+
+def _attach_current_dataset_splits(
+    landmarks: pd.DataFrame, manifest: pd.DataFrame
+) -> pd.DataFrame:
+    """Replace cached split labels with the current manifest assignment."""
+
+    split_by_episode = (
+        manifest[["episode_id", "dataset_split"]]
+        .drop_duplicates("episode_id")
+        .set_index("episode_id")["dataset_split"]
+    )
+    result = landmarks.copy()
+    result["dataset_split"] = result["episode_id"].map(split_by_episode)
+    if result["dataset_split"].isna().any():
+        missing = sorted(
+            result.loc[result["dataset_split"].isna(), "episode_id"]
+            .astype(str)
+            .unique()
+        )
+        raise ValueError(
+            "Cached landmark episodes are missing from the current manifest: "
+            f"{missing[:5]}"
+        )
+    return result
 
 
 def build_landmark_dataset(
@@ -995,6 +1321,7 @@ def build_landmark_dataset(
                 and set(MODEL_FEATURE_COLUMNS).issubset(cached.columns)
                 and len(cached) == len(manifest) * config.pre_onset_steps
             ):
+                cached = _attach_current_dataset_splits(cached, manifest)
                 if verbose:
                     print(f"Loaded {len(cached):,} cached landmark rows.")
                 return cached
@@ -1077,6 +1404,7 @@ def build_landmark_dataset(
     }
     frames = [frame_by_episode[str(episode["episode_id"])] for episode in episodes]
     landmarks = pd.concat(frames, ignore_index=True)
+    landmarks = _attach_current_dataset_splits(landmarks, manifest)
     expected_rows = len(manifest) * config.pre_onset_steps
     if len(landmarks) != expected_rows:
         raise AssertionError(f"Expected {expected_rows} rows, found {len(landmarks)}.")
@@ -1140,6 +1468,8 @@ def split_by_assignment(
         for name in ("train", "validation", "test")
     }
     for name, frame in frames.items():
+        if name == "validation" and frame.empty:
+            continue
         if frame.empty:
             raise ValueError(f"The {name} split is empty.")
         if frame["has_event_in_horizon"].nunique() != 2:
@@ -1168,6 +1498,38 @@ def split_by_assignment(
         "event-disjoint; patient overlap intentionally follows requested quotas"
     )
     return frames["train"], frames["validation"], frames["test"], split_info
+
+
+def split_development_test(
+    landmarks: pd.DataFrame,
+) -> tuple[pd.DataFrame, pd.DataFrame, dict[str, Any]]:
+    """Return all non-test episodes for development and the fixed test set."""
+
+    train, validation, test, split_info = split_by_assignment(landmarks)
+    development = pd.concat([train, validation], ignore_index=True)
+    if development["has_event_in_horizon"].nunique() != 2:
+        raise ValueError("The development split lacks event/no-event labels.")
+    development_events = set(
+        development.loc[
+            development["episode_type"].eq("preictal"), "source_event_id"
+        ].dropna()
+    )
+    test_events = set(
+        test.loc[test["episode_type"].eq("preictal"), "source_event_id"].dropna()
+    )
+    if development_events & test_events:
+        raise AssertionError("Development and test seizures overlap.")
+    split_info = {
+        "development_patients": sorted(
+            development["patient_id"].unique().tolist()
+        ),
+        "test_patients": sorted(test["patient_id"].unique().tolist()),
+        "design": (
+            "39-seizure development set with grouped out-of-fold tuning; "
+            "fixed event-disjoint 8-seizure test set"
+        ),
+    }
+    return development, test, split_info
 
 
 def make_person_period(
@@ -1212,6 +1574,289 @@ def make_person_period(
     return x, y, weights
 
 
+def _robust_location_scale(
+    frame: pd.DataFrame,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Return finite median/IQR statistics for the unchanged feature frame."""
+
+    values = frame[MODEL_FEATURE_COLUMNS].to_numpy(dtype=float)
+    medians = np.nanmedian(values, axis=0)
+    q25, q75 = np.nanpercentile(values, [25, 75], axis=0)
+    scales = q75 - q25
+    standard_deviation = np.nanstd(values, axis=0)
+    scales = np.where(scales > 1e-8, scales, standard_deviation)
+    scales = np.where(scales > 1e-8, scales, 1.0)
+    if not np.isfinite(medians).all() or not np.isfinite(scales).all():
+        raise ValueError("Risk normalization statistics must be finite.")
+    return medians, scales
+
+
+def _risk_normalization_statistics(
+    development: pd.DataFrame,
+) -> tuple[
+    np.ndarray,
+    np.ndarray,
+    dict[str, np.ndarray],
+    dict[str, np.ndarray],
+]:
+    """Learn global and patient baselines from development interictal EEG only."""
+
+    interictal = development.loc[
+        development["episode_type"].eq("interictal")
+    ]
+    reference = interictal if not interictal.empty else development
+    medians, scales = _robust_location_scale(reference)
+    patient_medians: dict[str, np.ndarray] = {}
+    patient_scales: dict[str, np.ndarray] = {}
+    for patient_id, patient_frame in reference.groupby("patient_id"):
+        patient_medians[str(patient_id)], patient_scales[str(patient_id)] = (
+            _robust_location_scale(patient_frame)
+        )
+    return medians, scales, patient_medians, patient_scales
+
+
+def _normalized_risk_design(
+    frame: pd.DataFrame | None,
+    base: np.ndarray,
+    medians: np.ndarray,
+    scales: np.ndarray,
+    patient_medians: dict[str, np.ndarray],
+    patient_scales: dict[str, np.ndarray],
+    mode: str,
+) -> np.ndarray:
+    """Build an internal risk matrix without changing public input columns."""
+
+    global_z = np.clip((base - medians) / scales, -8.0, 8.0)
+    if mode == "global":
+        return global_z.astype(np.float32)
+
+    patient_z = global_z.copy()
+    baseline_available = np.zeros((len(base), 1), dtype=np.float32)
+    if frame is not None and "patient_id" in frame:
+        patient_ids = frame["patient_id"].astype(str).to_numpy()
+        for patient_id in np.unique(patient_ids):
+            if patient_id not in patient_medians:
+                continue
+            rows = patient_ids == patient_id
+            patient_z[rows] = np.clip(
+                (base[rows] - patient_medians[patient_id])
+                / patient_scales[patient_id],
+                -8.0,
+                8.0,
+            )
+            baseline_available[rows] = 1.0
+    if mode == "patient":
+        return patient_z.astype(np.float32)
+    if mode == "combined":
+        return np.column_stack(
+            [global_z, patient_z, baseline_available]
+        ).astype(np.float32)
+    raise ValueError(f"Unknown risk normalization mode: {mode}")
+
+
+def _episode_balanced_sample_weight(frame: pd.DataFrame) -> np.ndarray:
+    """Give every seizure/control episode equal total fitting influence."""
+
+    episode_sizes = frame.groupby("episode_id")["episode_id"].transform("size")
+    weights = 1.0 / episode_sizes.to_numpy(dtype=float)
+    return weights * (len(weights) / weights.sum())
+
+
+def _fit_selected_risk_model(
+    development: pd.DataFrame,
+    medians: np.ndarray,
+    scales: np.ndarray,
+    patient_medians: dict[str, np.ndarray],
+    patient_scales: dict[str, np.ndarray],
+    config: ForecastConfig,
+) -> tuple[Any, str, str, float, np.ndarray]:
+    """Select risk model and produce leakage-resistant out-of-fold scores."""
+
+    base = development[MODEL_FEATURE_COLUMNS].to_numpy(dtype=float)
+    labels = development["has_event_in_horizon"].to_numpy(dtype=int)
+    groups = development["episode_id"].astype(str).to_numpy()
+    weights = _episode_balanced_sample_weight(development)
+    candidates = (
+        ("global", 5, 0.5),
+        ("global", 15, 1.0),
+        ("patient", 5, 0.5),
+        ("patient", 15, 1.0),
+        ("combined", 10, "sqrt"),
+        ("combined", 20, 0.5),
+    )
+    unique_groups = np.unique(groups)
+    n_splits = min(5, len(unique_groups))
+    if n_splits < 2:
+        raise ValueError("At least two training episodes are required.")
+    folds = list(
+        StratifiedGroupKFold(
+            n_splits=n_splits,
+            shuffle=True,
+            random_state=config.random_seed,
+        ).split(base, labels, groups)
+    )
+    scored: list[
+        tuple[float, str, int, float | str, np.ndarray]
+    ] = []
+    for candidate_number, (mode, min_leaf, max_features) in enumerate(
+        candidates
+    ):
+        out_of_fold_risk = np.full(len(development), np.nan, dtype=float)
+        for fold_number, (fit_rows, score_rows) in enumerate(folds):
+            if (
+                np.unique(labels[fit_rows]).size < 2
+                or np.unique(labels[score_rows]).size < 2
+            ):
+                continue
+            fit_frame = development.iloc[fit_rows]
+            score_frame = development.iloc[score_rows]
+            (
+                fold_medians,
+                fold_scales,
+                fold_patient_medians,
+                fold_patient_scales,
+            ) = _risk_normalization_statistics(fit_frame)
+            fit_design = _normalized_risk_design(
+                fit_frame,
+                base[fit_rows],
+                fold_medians,
+                fold_scales,
+                fold_patient_medians,
+                fold_patient_scales,
+                mode,
+            )
+            score_design = _normalized_risk_design(
+                score_frame,
+                base[score_rows],
+                fold_medians,
+                fold_scales,
+                fold_patient_medians,
+                fold_patient_scales,
+                mode,
+            )
+            estimator = ExtraTreesClassifier(
+                n_estimators=160,
+                min_samples_leaf=min_leaf,
+                max_features=max_features,
+                class_weight="balanced",
+                n_jobs=-1,
+                random_state=(
+                    config.random_seed
+                    + candidate_number * 100
+                    + fold_number
+                ),
+            )
+            estimator.fit(
+                fit_design,
+                labels[fit_rows],
+                sample_weight=weights[fit_rows],
+            )
+            out_of_fold_risk[score_rows] = estimator.predict_proba(
+                score_design
+            )[:, 1]
+        if not np.isfinite(out_of_fold_risk).all():
+            mean_score = float("-inf")
+        else:
+            mean_score = float(
+                roc_auc_score(labels, out_of_fold_risk)
+            )
+        scored.append(
+            (
+                mean_score,
+                mode,
+                min_leaf,
+                max_features,
+                out_of_fold_risk,
+            )
+        )
+
+    (
+        best_score,
+        best_mode,
+        best_min_leaf,
+        best_max_features,
+        best_oof_risk,
+    ) = max(
+        scored, key=lambda item: (item[0], -item[2])
+    )
+    # Retain the fold models for deployment. Their averaged predictions have
+    # the same out-of-sample character as the scores used to tune the alarm,
+    # unlike a refit model whose probability scale can shift substantially.
+    components: list[CrossFittedRiskComponent] = []
+    best_oof_risk = np.full(len(development), np.nan, dtype=float)
+    for fold_number, (fit_rows, score_rows) in enumerate(folds):
+        fit_frame = development.iloc[fit_rows]
+        score_frame = development.iloc[score_rows]
+        (
+            fold_medians,
+            fold_scales,
+            fold_patient_medians,
+            fold_patient_scales,
+        ) = _risk_normalization_statistics(fit_frame)
+        fit_design = _normalized_risk_design(
+            fit_frame,
+            base[fit_rows],
+            fold_medians,
+            fold_scales,
+            fold_patient_medians,
+            fold_patient_scales,
+            best_mode,
+        )
+        score_design = _normalized_risk_design(
+            score_frame,
+            base[score_rows],
+            fold_medians,
+            fold_scales,
+            fold_patient_medians,
+            fold_patient_scales,
+            best_mode,
+        )
+        estimator = ExtraTreesClassifier(
+            n_estimators=240,
+            min_samples_leaf=best_min_leaf,
+            max_features=best_max_features,
+            class_weight="balanced",
+            n_jobs=-1,
+            random_state=config.random_seed + 10_000 + fold_number,
+        )
+        estimator.fit(
+            fit_design,
+            labels[fit_rows],
+            sample_weight=weights[fit_rows],
+        )
+        best_oof_risk[score_rows] = estimator.predict_proba(
+            score_design
+        )[:, 1]
+        components.append(
+            CrossFittedRiskComponent(
+                estimator=estimator,
+                feature_medians=fold_medians,
+                feature_scales=fold_scales,
+                patient_feature_medians=fold_patient_medians,
+                patient_feature_scales=fold_patient_scales,
+            )
+        )
+    if not np.isfinite(best_oof_risk).all():
+        raise AssertionError("Out-of-fold risk predictions are incomplete.")
+    best_score = float(roc_auc_score(labels, best_oof_risk))
+    risk_model = CrossFittedRiskEnsemble(
+        components=tuple(components),
+        normalization_mode=best_mode,
+    )
+    model_name = (
+        f"{len(components)}-fold Extra Trees ensemble "
+        f"({best_mode} robust baseline, leaf={best_min_leaf}, "
+        f"features={best_max_features})"
+    )
+    return (
+        risk_model,
+        best_mode,
+        model_name,
+        best_score,
+        best_oof_risk,
+    )
+
+
 def fit_hazard_model(
     development: pd.DataFrame,
     config: ForecastConfig = ForecastConfig(),
@@ -1247,30 +1892,39 @@ def fit_hazard_model(
         warnings.simplefilter("ignore", category=ConvergenceWarning)
         timing_model.fit(x, y, classifier__sample_weight=weights)
 
-    risk_feature_columns = tuple(
-        column
-        for column in MODEL_FEATURE_COLUMNS
-        if "channel_p90_std" in column
-    )
-    if not risk_feature_columns:
-        raise AssertionError("No channel-p90 variability features are available.")
-    risk_model = ExtraTreesClassifier(
-        n_estimators=500,
-        min_samples_leaf=5,
-        max_features=1.0,
-        class_weight="balanced",
-        n_jobs=-1,
-        random_state=config.random_seed,
-    )
-    risk_model.fit(
-        development[list(risk_feature_columns)],
-        development["has_event_in_horizon"].to_numpy(dtype=int),
+    (
+        feature_medians,
+        feature_scales,
+        patient_feature_medians,
+        patient_feature_scales,
+    ) = _risk_normalization_statistics(development)
+    (
+        risk_model,
+        normalization_mode,
+        risk_model_name,
+        risk_cv_auroc,
+        risk_oof_predictions,
+    ) = _fit_selected_risk_model(
+        development,
+        feature_medians,
+        feature_scales,
+        patient_feature_medians,
+        patient_feature_scales,
+        config,
     )
     return TwoStageForecastModel(
         timing_model=timing_model,
         risk_model=risk_model,
-        risk_feature_columns=risk_feature_columns,
-        smoothing_alpha=0.10,
+        risk_feature_columns=tuple(MODEL_FEATURE_COLUMNS),
+        smoothing_alpha=1.0,
+        feature_medians=feature_medians,
+        feature_scales=feature_scales,
+        patient_feature_medians=patient_feature_medians,
+        patient_feature_scales=patient_feature_scales,
+        normalization_mode=normalization_mode,
+        risk_model_name=risk_model_name,
+        risk_cv_auroc=risk_cv_auroc,
+        risk_oof_predictions=risk_oof_predictions,
     )
 
 
@@ -1278,6 +1932,11 @@ def model_iteration_count(model: Any) -> int | None:
     """Return fitted iterations for supported estimators."""
 
     if isinstance(model, TwoStageForecastModel):
+        if isinstance(model.risk_model, CrossFittedRiskEnsemble):
+            return sum(
+                len(getattr(component.estimator, "estimators_", []))
+                for component in model.risk_model.components
+            )
         return len(getattr(model.risk_model, "estimators_", [])) or None
     if isinstance(model, Pipeline):
         classifier = model.named_steps.get("classifier")
@@ -1341,17 +2000,41 @@ def predict_horizon_distribution(
     no_event = np.prod(1.0 - hazards, axis=1)
 
     if isinstance(model, TwoStageForecastModel):
-        column_indices = [
-            MODEL_FEATURE_COLUMNS.index(column)
-            for column in model.risk_feature_columns
-        ]
-        risk_input = pd.DataFrame(
-            base[:, column_indices],
-            columns=list(model.risk_feature_columns),
-        )
-        risk_values = model.risk_model.predict_proba(risk_input)[:, 1]
+        if isinstance(model.risk_model, CrossFittedRiskEnsemble):
+            risk_values = model.risk_model.predict_feature_proba(
+                feature_frame, base
+            )[:, 1]
+        elif (
+            model.feature_medians is not None
+            and model.feature_scales is not None
+            and model.patient_feature_medians is not None
+            and model.patient_feature_scales is not None
+            and model.normalization_mode != "legacy"
+        ):
+            risk_input = _normalized_risk_design(
+                feature_frame,
+                base,
+                model.feature_medians,
+                model.feature_scales,
+                model.patient_feature_medians,
+                model.patient_feature_scales,
+                model.normalization_mode,
+            )
+            risk_values = model.risk_model.predict_proba(risk_input)[:, 1]
+        else:
+            column_indices = [
+                MODEL_FEATURE_COLUMNS.index(column)
+                for column in model.risk_feature_columns
+            ]
+            risk_input = pd.DataFrame(
+                base[:, column_indices],
+                columns=list(model.risk_feature_columns),
+            )
+            risk_values = model.risk_model.predict_proba(risk_input)[:, 1]
         if (
-            feature_frame is not None
+            model.normalization_mode == "legacy"
+            and model.smoothing_alpha < 1.0
+            and feature_frame is not None
             and {"episode_id", "landmark_step"}.issubset(feature_frame.columns)
         ):
             smoothed = np.empty_like(risk_values)
@@ -1397,6 +2080,7 @@ def alarm_state_from_risk(
     threshold: float,
     alarm_on_consecutive: int = 2,
     alarm_off_consecutive: int = 13,
+    refractory_consecutive: int = 0,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Apply a hysteretic alarm state machine to one ordered episode.
 
@@ -1411,8 +2095,14 @@ def alarm_state_from_risk(
     is_active = False
     high_run = 0
     low_run = 0
+    refractory_remaining = 0
     for index, is_high in enumerate(high):
         if not is_active:
+            if refractory_remaining > 0:
+                refractory_remaining -= 1
+                high_run = 0
+                active[index] = False
+                continue
             high_run = high_run + 1 if is_high else 0
             if high_run >= alarm_on_consecutive:
                 is_active = True
@@ -1422,6 +2112,7 @@ def alarm_state_from_risk(
             if low_run >= alarm_off_consecutive:
                 is_active = False
                 high_run = 0
+                refractory_remaining = refractory_consecutive
         active[index] = is_active
     return high, active
 
@@ -1432,6 +2123,7 @@ def _alarm_columns(
     threshold: float,
     alarm_on_consecutive: int,
     alarm_off_consecutive: int,
+    refractory_consecutive: int = 0,
 ) -> pd.DataFrame:
     """Return raw threshold flags and episode-local persistent alarm states."""
 
@@ -1450,6 +2142,7 @@ def _alarm_columns(
             threshold,
             alarm_on_consecutive,
             alarm_off_consecutive,
+            refractory_consecutive,
         )
         scored.loc[ordered, "raw_high_probability"] = high
         scored.loc[ordered, "alarm_active"] = alarm
@@ -1463,48 +2156,84 @@ def _warning_summary(
     bin_seconds: int = BIN_SECONDS,
     alarm_on_consecutive: int = 2,
     alarm_off_consecutive: int = 13,
+    refractory_consecutive: int = 0,
 ) -> dict[str, float]:
-    scored = frame[
-        ["episode_id", "patient_id", "episode_type", "landmark_step", "time_to_event_seconds"]
-    ].copy()
-    scored["risk"] = risk
-    alarm = _alarm_columns(
-        scored,
-        risk,
+    values = np.asarray(risk, dtype=float)
+    scored = frame.reset_index(drop=True)
+    if len(scored) != len(values):
+        raise ValueError("Risk vector length must match the scored frame.")
+    sequences: list[tuple[np.ndarray, str, np.ndarray]] = []
+    for _, indices in scored.sort_values(
+        ["episode_id", "landmark_step"]
+    ).groupby("episode_id").groups.items():
+        ordered = np.asarray(list(indices), dtype=int)
+        sequences.append(
+            (
+                values[ordered],
+                str(scored.loc[ordered[0], "episode_type"]),
+                scored.loc[
+                    ordered, "time_to_event_seconds"
+                ].to_numpy(dtype=float),
+            )
+        )
+    return _warning_summary_from_sequences(
+        sequences,
         threshold,
+        len(scored),
+        bin_seconds,
         alarm_on_consecutive,
         alarm_off_consecutive,
+        refractory_consecutive,
     )
-    scored["raw_high_probability"] = alarm["raw_high_probability"].to_numpy()
-    scored["warning"] = alarm["alarm_active"].to_numpy()
-    positive = scored.loc[scored["episode_type"].eq("preictal")]
-    negative = scored.loc[scored["episode_type"].eq("interictal")]
 
-    captured = positive.groupby("episode_id")["warning"].any()
-    sensitivity = float(captured.mean()) if len(captured) else float("nan")
-    time_in_warning = float(scored["warning"].mean())
 
+def _warning_summary_from_sequences(
+    sequences: list[tuple[np.ndarray, str, np.ndarray]],
+    threshold: float,
+    total_count: int,
+    bin_seconds: int,
+    alarm_on_consecutive: int,
+    alarm_off_consecutive: int,
+    refractory_consecutive: int,
+) -> dict[str, float]:
+    """Fast warning summary for episode arrays prepared once per search."""
+
+    warning_count = 0
     false_alarms = 0
-    for _, group in negative.sort_values(
-        ["episode_id", "landmark_step"]
-    ).groupby("episode_id"):
-        values = group["warning"].to_numpy(dtype=bool)
-        false_alarms += int(np.sum(values & ~np.r_[False, values[:-1]]))
-    negative_hours = len(negative) * bin_seconds / 3600.0
+    negative_count = 0
+    captured: list[bool] = []
+    lead_times: list[float] = []
+    for episode_risk, episode_type, time_to_event in sequences:
+        _, warning = alarm_state_from_risk(
+            episode_risk,
+            threshold,
+            alarm_on_consecutive,
+            alarm_off_consecutive,
+            refractory_consecutive,
+        )
+        warning_count += int(warning.sum())
+        if episode_type == "preictal":
+            was_captured = bool(warning.any())
+            captured.append(was_captured)
+            if was_captured:
+                first_warning = int(np.flatnonzero(warning)[0])
+                lead_times.append(float(time_to_event[first_warning]))
+        else:
+            negative_count += len(episode_risk)
+            false_alarms += int(
+                np.sum(warning & ~np.r_[False, warning[:-1]])
+            )
+    sensitivity = float(np.mean(captured)) if captured else float("nan")
+    time_in_warning = float(warning_count / total_count)
+    negative_hours = negative_count * bin_seconds / 3600.0
     false_alarms_per_hour = (
         float(false_alarms / negative_hours) if negative_hours else float("nan")
     )
-
-    lead_times: list[float] = []
-    for _, group in positive.groupby("episode_id"):
-        warned = group.loc[group["warning"]].sort_values("landmark_step")
-        if not warned.empty:
-            lead_times.append(float(warned.iloc[0]["time_to_event_seconds"]))
     return {
         "sensitivity": sensitivity,
         "time_in_warning": time_in_warning,
         "false_alarms_per_hour": false_alarms_per_hour,
-        "captured_seizures": float(captured.sum()),
+        "captured_seizures": float(sum(captured)),
         "total_seizures": float(len(captured)),
         "median_warning_lead_seconds": (
             float(np.median(lead_times)) if lead_times else float("nan")
@@ -1520,25 +2249,47 @@ def select_warning_threshold(
     alarm_on_consecutive: int = 2,
     alarm_off_consecutive: int = 13,
     minimum_sensitivity_target: float | None = None,
+    refractory_consecutive: int = 0,
+    quantile_count: int = 201,
 ) -> tuple[float, pd.DataFrame]:
     """Choose a development-only operating point.
 
     When a minimum sensitivity is requested, choose the qualifying point with
-    the fewest false alarms and then the least warning time. Otherwise retain
-    the original time-in-warning constrained selection.
+    the fewest false alarms and then the least warning time. Without a hard
+    target, maximize a clinically balanced utility: seizure capture is given
+    double weight, while false-warning rate and time in warning are penalized.
     """
 
-    quantiles = np.linspace(0, 1, 201)
+    if quantile_count < 2:
+        raise ValueError("quantile_count must be at least two.")
+    quantiles = np.linspace(0, 1, quantile_count)
     candidates = np.unique(np.r_[0.0, np.quantile(risk, quantiles), 1.0])
+    values = np.asarray(risk, dtype=float)
+    scored = development.reset_index(drop=True)
+    sequences: list[tuple[np.ndarray, str, np.ndarray]] = []
+    for _, indices in scored.sort_values(
+        ["episode_id", "landmark_step"]
+    ).groupby("episode_id").groups.items():
+        ordered = np.asarray(list(indices), dtype=int)
+        sequences.append(
+            (
+                values[ordered],
+                str(scored.loc[ordered[0], "episode_type"]),
+                scored.loc[
+                    ordered, "time_to_event_seconds"
+                ].to_numpy(dtype=float),
+            )
+        )
     rows: list[dict[str, float]] = []
     for threshold in candidates:
-        summary = _warning_summary(
-            development,
-            risk,
+        summary = _warning_summary_from_sequences(
+            sequences,
             float(threshold),
+            len(scored),
             bin_seconds,
             alarm_on_consecutive,
             alarm_off_consecutive,
+            refractory_consecutive,
         )
         rows.append({"threshold": float(threshold), **summary})
     curve = pd.DataFrame(rows)
@@ -1552,6 +2303,17 @@ def select_warning_threshold(
                 ascending=[True, True, False],
             ).iloc[0]
             return float(selected["threshold"]), curve
+    if minimum_sensitivity_target is None:
+        curve["operating_utility"] = (
+            2.0 * curve["sensitivity"]
+            - 0.10 * curve["false_alarms_per_hour"]
+            - 0.25 * curve["time_in_warning"]
+        )
+        selected = curve.sort_values(
+            ["operating_utility", "sensitivity", "threshold"],
+            ascending=[False, False, False],
+        ).iloc[0]
+        return float(selected["threshold"]), curve
     eligible = curve.loc[curve["time_in_warning"] <= target_time_in_warning].copy()
     if eligible.empty or eligible["sensitivity"].max() <= 0:
         curve["objective"] = curve["sensitivity"] - curve["time_in_warning"]
@@ -1565,6 +2327,192 @@ def select_warning_threshold(
             ascending=[False, True, False],
         ).iloc[0]
     return float(selected["threshold"]), curve
+
+
+def _causal_smooth_risk(
+    frame: pd.DataFrame,
+    risk: np.ndarray,
+    alpha: float,
+) -> np.ndarray:
+    """Exponentially smooth risk within ordered episodes using past values only."""
+
+    if not 0 < alpha <= 1:
+        raise ValueError("Risk smoothing alpha must be in (0, 1].")
+    values = np.asarray(risk, dtype=float)
+    if len(values) != len(frame):
+        raise ValueError("Risk vector length must match the scored frame.")
+    if alpha == 1:
+        return values.copy()
+    smoothed = np.empty_like(values)
+    ordered_frame = frame.reset_index(drop=True)
+    for _, indices in ordered_frame.sort_values(
+        ["episode_id", "landmark_step"]
+    ).groupby("episode_id").groups.items():
+        ordered = np.asarray(list(indices), dtype=int)
+        smoothed[ordered] = (
+            pd.Series(values[ordered])
+            .ewm(alpha=alpha, adjust=False)
+            .mean()
+            .to_numpy()
+        )
+    return smoothed
+
+
+def _rescale_event_distribution(
+    pmf: np.ndarray,
+    no_event: np.ndarray,
+    event_risk: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Preserve conditional timing while replacing total event probability."""
+
+    raw_risk = 1.0 - np.asarray(no_event, dtype=float)
+    conditional = np.asarray(pmf, dtype=float) / np.clip(
+        raw_risk[:, None], 1e-12, None
+    )
+    zero_rows = raw_risk <= 1e-12
+    if zero_rows.any():
+        conditional[zero_rows] = 1.0 / pmf.shape[1]
+    conditional /= np.clip(
+        conditional.sum(axis=1, keepdims=True), 1e-12, None
+    )
+    adjusted_risk = np.clip(
+        np.asarray(event_risk, dtype=float), 1e-7, 1.0 - 1e-7
+    )
+    return conditional * adjusted_risk[:, None], 1.0 - adjusted_risk
+
+
+def select_warning_policy(
+    development: pd.DataFrame,
+    risk: np.ndarray,
+    config: ForecastConfig = ForecastConfig(),
+) -> tuple[float, pd.DataFrame, np.ndarray, dict[str, float | int]]:
+    """Tune a causal alarm policy on development data without changing frames."""
+
+    labels = development["has_event_in_horizon"].to_numpy(dtype=bool)
+    candidate_rows: list[dict[str, float | int]] = []
+    smoothed_by_alpha: dict[float, np.ndarray] = {}
+    for alpha in (0.05, 0.08, 0.15, 0.30, 0.60, 1.0):
+        smoothed = _causal_smooth_risk(development, risk, alpha)
+        smoothed_by_alpha[alpha] = smoothed
+        auroc = (
+            float(roc_auc_score(labels, smoothed))
+            if np.unique(labels).size == 2
+            else float("nan")
+        )
+        for alarm_on in (2, 3, 4, 6, 12, 18):
+            for alarm_off in (6, 13, 25):
+                for refractory in (0, 12, 60):
+                    threshold, curve = select_warning_threshold(
+                        development,
+                        smoothed,
+                        config.warning_time_target,
+                        config.bin_seconds,
+                        alarm_on,
+                        alarm_off,
+                        config.minimum_development_sensitivity,
+                        refractory,
+                        51,
+                    )
+                    selected = curve.iloc[
+                        (curve["threshold"] - threshold).abs().argmin()
+                    ]
+                    candidate_rows.append(
+                        {
+                            "alpha": alpha,
+                            "alarm_on_consecutive": alarm_on,
+                            "alarm_off_consecutive": alarm_off,
+                            "refractory_consecutive": refractory,
+                            "threshold": threshold,
+                            "sensitivity": float(selected["sensitivity"]),
+                            "false_alarms_per_hour": float(
+                                selected["false_alarms_per_hour"]
+                            ),
+                            "time_in_warning": float(
+                                selected["time_in_warning"]
+                            ),
+                            "auroc": auroc,
+                            "operating_utility": float(
+                                selected.get("operating_utility", np.nan)
+                            ),
+                        }
+                    )
+
+    candidates = pd.DataFrame(candidate_rows)
+    if config.minimum_development_sensitivity is None:
+        candidates["combined_utility"] = (
+            candidates["operating_utility"] + 0.20 * candidates["auroc"]
+        )
+        selected_policy = candidates.sort_values(
+            [
+                "combined_utility",
+                "sensitivity",
+                "false_alarms_per_hour",
+                "time_in_warning",
+                "threshold",
+            ],
+            ascending=[False, False, True, True, False],
+        ).iloc[0]
+    else:
+        sensitivity_eligible = candidates.loc[
+            candidates["sensitivity"]
+            >= config.minimum_development_sensitivity
+        ].copy()
+        pool = (
+            sensitivity_eligible
+            if not sensitivity_eligible.empty
+            else candidates.copy()
+        )
+        false_alarm_eligible = pool.loc[
+            pool["false_alarms_per_hour"]
+            <= config.false_alarm_target_per_hour
+        ].copy()
+        if not false_alarm_eligible.empty:
+            selected_policy = false_alarm_eligible.sort_values(
+                [
+                    "auroc",
+                    "false_alarms_per_hour",
+                    "time_in_warning",
+                    "threshold",
+                ],
+                ascending=[False, True, True, False],
+            ).iloc[0]
+        else:
+            selected_policy = pool.sort_values(
+                [
+                    "sensitivity",
+                    "false_alarms_per_hour",
+                    "auroc",
+                    "time_in_warning",
+                    "threshold",
+                ],
+                ascending=[False, True, False, True, False],
+            ).iloc[0]
+
+    policy = {
+        "smoothing_alpha": float(selected_policy["alpha"]),
+        "alarm_on_consecutive": int(
+            selected_policy["alarm_on_consecutive"]
+        ),
+        "alarm_off_consecutive": int(
+            selected_policy["alarm_off_consecutive"]
+        ),
+        "refractory_consecutive": int(
+            selected_policy["refractory_consecutive"]
+        ),
+    }
+    selected_risk = smoothed_by_alpha[policy["smoothing_alpha"]]
+    threshold, curve = select_warning_threshold(
+        development,
+        selected_risk,
+        config.warning_time_target,
+        config.bin_seconds,
+        policy["alarm_on_consecutive"],
+        policy["alarm_off_consecutive"],
+        config.minimum_development_sensitivity,
+        policy["refractory_consecutive"],
+        201,
+    )
+    return threshold, curve, selected_risk, policy
 
 
 def _class_baseline(
@@ -1586,27 +2534,63 @@ def evaluate_forecasts(
     holdout: pd.DataFrame,
     warning_time_target: float = 0.25,
     config: ForecastConfig = ForecastConfig(),
+    development_risk: np.ndarray | None = None,
+    holdout_risk: np.ndarray | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, float, pd.DataFrame]:
-    """Evaluate probability, timing, and operational warning performance."""
+    """Evaluate forecasts with optional out-of-fold alarm-risk vectors."""
 
-    _, development_pmf, development_no_event = predict_horizon_distribution(
-        model, development, config
+    if development_risk is None:
+        _, _, development_no_event = predict_horizon_distribution(
+            model, development, config
+        )
+        raw_development_risk = 1.0 - development_no_event
+    else:
+        raw_development_risk = np.asarray(development_risk, dtype=float)
+        if len(raw_development_risk) != len(development):
+            raise ValueError(
+                "development_risk length must match the development frame."
+            )
+        if not np.isfinite(raw_development_risk).all():
+            raise ValueError("development_risk must contain finite values.")
+    raw_development_risk = np.clip(
+        raw_development_risk, 1e-7, 1.0 - 1e-7
     )
-    development_risk = 1.0 - development_no_event
-    threshold, threshold_curve = select_warning_threshold(
-        development,
+    (
+        threshold,
+        threshold_curve,
         development_risk,
-        warning_time_target,
-        config.bin_seconds,
-        config.alarm_on_consecutive,
-        config.alarm_off_consecutive,
-        config.minimum_development_sensitivity,
+        warning_policy,
+    ) = select_warning_policy(
+        development,
+        raw_development_risk,
+        config,
     )
+    if isinstance(model, TwoStageForecastModel):
+        model.warning_policy = {
+            **warning_policy,
+            "threshold": float(threshold),
+        }
 
     hazards, pmf, no_event = predict_horizon_distribution(
         model, holdout, config
     )
-    risk = 1.0 - no_event
+    raw_risk = (
+        1.0 - no_event
+        if holdout_risk is None
+        else np.asarray(holdout_risk, dtype=float)
+    )
+    if len(raw_risk) != len(holdout):
+        raise ValueError("holdout_risk length must match the holdout frame.")
+    if not np.isfinite(raw_risk).all():
+        raise ValueError("holdout_risk must contain finite values.")
+    raw_risk = np.clip(raw_risk, 1e-7, 1.0 - 1e-7)
+    risk = _causal_smooth_risk(
+        holdout,
+        raw_risk,
+        float(warning_policy["smoothing_alpha"]),
+    )
+    risk = np.clip(risk, 1e-7, 1.0 - 1e-7)
+    pmf, no_event = _rescale_event_distribution(pmf, no_event, risk)
     has_event = holdout["has_event_in_horizon"].to_numpy(dtype=bool)
     event_bin = holdout["event_bin"].to_numpy(dtype=int)
     rows = np.arange(len(holdout))
@@ -1674,8 +2658,9 @@ def evaluate_forecasts(
         prediction_columns,
         risk,
         threshold,
-        config.alarm_on_consecutive,
-        config.alarm_off_consecutive,
+        int(warning_policy["alarm_on_consecutive"]),
+        int(warning_policy["alarm_off_consecutive"]),
+        int(warning_policy["refractory_consecutive"]),
     )
     prediction_columns["raw_high_probability"] = alarm["raw_high_probability"].to_numpy()
     prediction_columns["alarm_active"] = alarm["alarm_active"].to_numpy()
@@ -1688,8 +2673,9 @@ def evaluate_forecasts(
         risk,
         threshold,
         config.bin_seconds,
-        config.alarm_on_consecutive,
-        config.alarm_off_consecutive,
+        int(warning_policy["alarm_on_consecutive"]),
+        int(warning_policy["alarm_off_consecutive"]),
+        int(warning_policy["refractory_consecutive"]),
     )
     horizon_label = f"{config.horizon_seconds / 60:g}-minute"
     auroc = (
@@ -1754,7 +2740,8 @@ def evaluate_forecasts(
             "value": warning_metrics["sensitivity"],
             "interpretation": (
                 f"Fraction of seizure episodes with an alarm after "
-                f"{config.alarm_on_consecutive} consecutive high-risk landmarks."
+                f"{warning_policy['alarm_on_consecutive']} consecutive "
+                "high-risk landmarks."
             ),
         },
         {
@@ -1783,7 +2770,8 @@ def evaluate_forecasts(
             "value": threshold,
             "interpretation": (
                 "Chosen without holdout outcomes to meet the configured "
-                "development-sensitivity target, then minimize false alarms."
+                "development sensitivity/false-alarm targets using a causal "
+                "development-only alarm policy."
             ),
         },
     ]
@@ -1798,8 +2786,9 @@ def evaluate_forecasts(
             group_risk,
             threshold,
             config.bin_seconds,
-            config.alarm_on_consecutive,
-            config.alarm_off_consecutive,
+            int(warning_policy["alarm_on_consecutive"]),
+            int(warning_policy["alarm_off_consecutive"]),
+            int(warning_policy["refractory_consecutive"]),
         )
         patient_rows.append(
             {
@@ -1840,7 +2829,8 @@ def extract_context_features_from_edf(
         edf_path,
         landmark_seconds - config.context_seconds,
         config.context_seconds,
-        min_channels=config.min_eeg_channels,
+        min_channels=config.effective_min_eeg_channels,
+        included_channels=config.selected_eeg_channels,
     )
     micro = segment_micro_features(data, sample_rate, config)
     aggregated = aggregate_context(
@@ -1878,6 +2868,11 @@ def build_seizure_reading_forecasts(
         "context_seconds": config.context_seconds,
         "target_sample_rate": config.target_sample_rate,
         "min_eeg_channels": config.min_eeg_channels,
+        "included_eeg_channels": (
+            list(config.selected_eeg_channels)
+            if config.selected_eeg_channels is not None
+            else None
+        ),
         "seizures": (
             seizures[
                 [
@@ -2006,6 +3001,18 @@ def build_seizure_reading_forecasts(
         model, all_features, config
     )
     risk = 1.0 - no_event
+    if (
+        isinstance(model, TwoStageForecastModel)
+        and model.warning_policy is not None
+    ):
+        risk = _causal_smooth_risk(
+            all_features,
+            risk,
+            float(model.warning_policy["smoothing_alpha"]),
+        )
+        pmf, no_event = _rescale_event_distribution(
+            pmf, no_event, risk
+        )
     conditional = pmf / np.clip(risk[:, None], 1e-12, None)
 
     repeated_metadata = reading_metadata.loc[
@@ -2161,7 +3168,8 @@ class RollingForecastEngine:
             self.edf_path,
             read_start,
             read_duration,
-            min_channels=self.config.min_eeg_channels,
+            min_channels=self.config.effective_min_eeg_channels,
+            included_channels=self.config.selected_eeg_channels,
         )
         micro = segment_micro_features(data, sample_rate, self.config)
         expected_micro = (
@@ -2194,6 +3202,36 @@ class RollingForecastEngine:
         ) = predict_horizon_distribution(
             self.model, self.context_features, self.config
         )
+        if (
+            isinstance(self.model, TwoStageForecastModel)
+            and self.model.warning_policy is not None
+        ):
+            precomputed_risk = _causal_smooth_risk(
+                self.context_features,
+                1.0 - self.precomputed_no_event,
+                float(self.model.warning_policy["smoothing_alpha"]),
+            )
+            (
+                self.precomputed_pmf,
+                self.precomputed_no_event,
+            ) = _rescale_event_distribution(
+                self.precomputed_pmf,
+                self.precomputed_no_event,
+                precomputed_risk,
+            )
+            survival_before = 1.0 - np.concatenate(
+                [
+                    np.zeros((len(self.precomputed_pmf), 1), dtype=float),
+                    np.cumsum(self.precomputed_pmf[:, :-1], axis=1),
+                ],
+                axis=1,
+            )
+            self.precomputed_hazards = np.clip(
+                self.precomputed_pmf
+                / np.clip(survival_before, 1e-12, None),
+                1e-7,
+                1.0 - 1e-7,
+            )
         self.precomputed_tables = [
             moving_horizon_forecast_table(
                 self.precomputed_pmf[step], step, self.config
@@ -2347,7 +3385,14 @@ def permutation_feature_importance(
         raise ValueError("n_repeats must be at least one.")
     seed = config.random_seed if random_seed is None else random_seed
     rng = np.random.default_rng(seed)
-    base = validation[MODEL_FEATURE_COLUMNS].copy().reset_index(drop=True)
+    metadata_columns = [
+        column
+        for column in ("patient_id", "episode_id", "landmark_step")
+        if column in validation
+    ]
+    base = validation[
+        metadata_columns + MODEL_FEATURE_COLUMNS
+    ].copy().reset_index(drop=True)
     _, baseline_pmf, baseline_no_event = predict_horizon_distribution(
         model, base, config
     )
@@ -2404,7 +3449,14 @@ def local_counterfactual_explanation(
 
     if len(reading) != 1:
         raise ValueError("Exactly one reading row is required.")
-    base = reading[MODEL_FEATURE_COLUMNS].reset_index(drop=True)
+    metadata_columns = [
+        column
+        for column in ("patient_id", "episode_id", "landmark_step")
+        if column in reading
+    ]
+    base = reading[
+        metadata_columns + MODEL_FEATURE_COLUMNS
+    ].reset_index(drop=True)
     if isinstance(reference, pd.DataFrame):
         reference_values = reference[MODEL_FEATURE_COLUMNS].median()
     else:
@@ -2417,9 +3469,15 @@ def local_counterfactual_explanation(
     )
     original_risk = float(1.0 - original_no_event[0])
     counterfactual = pd.DataFrame(
-        np.repeat(base.to_numpy(dtype=float), len(MODEL_FEATURE_COLUMNS), axis=0),
+        np.repeat(
+            base[MODEL_FEATURE_COLUMNS].to_numpy(dtype=float),
+            len(MODEL_FEATURE_COLUMNS),
+            axis=0,
+        ),
         columns=MODEL_FEATURE_COLUMNS,
     )
+    for metadata_column in metadata_columns:
+        counterfactual[metadata_column] = base.at[0, metadata_column]
     for index, feature in enumerate(MODEL_FEATURE_COLUMNS):
         counterfactual.at[index, feature] = float(reference_values[feature])
     _, _, counterfactual_no_event = predict_horizon_distribution(
@@ -2433,7 +3491,9 @@ def local_counterfactual_explanation(
                 readable_feature_name(feature)
                 for feature in MODEL_FEATURE_COLUMNS
             ],
-            "observed_value": base.iloc[0].to_numpy(dtype=float),
+            "observed_value": base.loc[
+                0, MODEL_FEATURE_COLUMNS
+            ].to_numpy(dtype=float),
             "training_median": reference_values.to_numpy(dtype=float),
             "original_event_risk": original_risk,
             "counterfactual_event_risk": counterfactual_risk,

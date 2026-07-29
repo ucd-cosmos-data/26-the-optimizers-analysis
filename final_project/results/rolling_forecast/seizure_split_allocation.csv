@@ -32,6 +32,7 @@ train,PN10,5,PN10_S04,PN10_S04_preictal,PN10-4.5.6.edf
 train,PN10,6,PN10_S05,PN10_S05_preictal,PN10-4.5.6.edf
 train,PN10,7,PN10_S02,PN10_S02_preictal,PN10-2.edf
 train,PN10,8,PN10_S10,PN10_S10_preictal,PN10-10.edf
+train,PN10,9,PN10_S06,PN10_S06_preictal,PN10-4.5.6.edf
 train,PN11,1,PN11_S01,PN11_S01_preictal,PN11-1.edf
 train,PN12,1,PN12_S02,PN12_S02_preictal,PN12-1.2.edf
 train,PN12,2,PN12_S03,PN12_S03_preictal,PN12-3.edf
@@ -41,8 +42,7 @@ train,PN13,2,PN13_S03,PN13_S03_preictal,PN13-3.edf
 train,PN14,1,PN14_S04,PN14_S04_preictal,PN14-4.edf
 train,PN14,2,PN14_S03,PN14_S03_preictal,PN14-3.edf
 train,PN14,3,PN14_S02,PN14_S02_preictal,PN14-2.edf
+train,PN14,4,PN14_S01,PN14_S01_preictal,PN14-1.edf
 train,PN16,1,PN16_S01,PN16_S01_preictal,PN16-1.edf
-validation,PN10,1,PN10_S06,PN10_S06_preictal,PN10-4.5.6.edf
-validation,PN14,1,PN14_S01,PN14_S01_preictal,PN14-1.edf
-validation,PN16,1,PN16_S02,PN16_S02_preictal,PN16-2.edf
-validation,PN17,1,PN17_S01,PN17_S01_preictal,PN17-1.edf
+train,PN16,2,PN16_S02,PN16_S02_preictal,PN16-2.edf
+train,PN17,1,PN17_S01,PN17_S01_preictal,PN17-1.edf
