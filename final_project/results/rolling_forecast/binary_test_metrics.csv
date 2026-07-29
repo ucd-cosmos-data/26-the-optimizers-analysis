@@ -1,0 +1,7 @@
+metric,value,interpretation
+5-minute average precision,0.3200262417265176,Higher is better; simple binary comparator.
+5-minute AUROC,0.6243967013888889,Higher is better; 0.5 is random ranking.
+binary Brier score,0.19675251325677262,Lower is better; probability error.
+seizure sensitivity,0.625,Fraction of seizure episodes warned.
+false alarms per hour,13.5,Warning starts during sampled interictal time.
+calibration slope,0.7950143328176196,Calibration method: positive_platt.
