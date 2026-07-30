@@ -42,8 +42,8 @@ from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 
 
-MODULE_VERSION = "8.1.0"
-FEATURE_CACHE_VERSION = "7.0.0"
+MODULE_VERSION = "8.2.0"
+FEATURE_CACHE_VERSION = "7.1.0"
 BIN_SECONDS = 5
 HORIZON_SECONDS = 300
 CONTEXT_SECONDS = 120
@@ -684,46 +684,54 @@ def _micro_window_features(
     )
     window = window[keep]
 
-    frequencies, psd = signal.periodogram(
-        window,
-        fs=sample_rate,
-        window="hann",
-        detrend=False,
-        scaling="density",
-        axis=1,
-    )
-    analysis_mask = (frequencies >= 0.5) & (frequencies <= 45.0)
-    total_power = np.trapz(
-        psd[:, analysis_mask], frequencies[analysis_mask], axis=1
-    )
-    total_power = np.clip(total_power, 1e-12, None)
-
-    relative_values: list[float] = []
-    log_power_values: list[float] = []
-    for low, high in BANDS.values():
-        mask = (frequencies >= low) & (frequencies < high)
-        band_power = np.trapz(psd[:, mask], frequencies[mask], axis=1)
-        band_power = np.clip(band_power, 1e-12, None)
-        relative_values.append(float(np.median(band_power / total_power)))
-        log_power_values.append(float(np.median(np.log10(band_power))))
-
     rms = np.sqrt(np.mean(np.square(window), axis=1))
     line_length = np.mean(np.abs(np.diff(window, axis=1)), axis=1)
-    normalized_psd = psd[:, analysis_mask] / np.clip(
-        psd[:, analysis_mask].sum(axis=1, keepdims=True), 1e-12, None
+    mad = 1.4826 * np.median(np.abs(window), axis=1)
+    robust_range = np.percentile(window, 95, axis=1) - np.percentile(
+        window, 5, axis=1
     )
-    entropy = -np.sum(
-        normalized_psd * np.log(np.clip(normalized_psd, 1e-12, None)), axis=1
+    zero_crossings = np.mean(
+        np.diff(np.signbit(window), axis=1) != 0, axis=1
     )
-    entropy /= np.log(normalized_psd.shape[1])
+    signal_std = np.std(window, axis=1)
+    diff_std = np.std(np.diff(window, axis=1), axis=1)
+    mobility = diff_std / np.clip(signal_std, 1e-12, None)
+    second_diff_std = np.std(np.diff(window, n=2, axis=1), axis=1)
+    complexity = (
+        second_diff_std / np.clip(diff_std, 1e-12, None)
+    ) / np.clip(mobility, 1e-12, None)
+    channel_values = np.column_stack(
+        [
+            np.log1p(rms),
+            np.log1p(line_length),
+            np.log1p(mad),
+            np.log1p(robust_range),
+            zero_crossings,
+            mobility,
+            complexity,
+        ]
+    )
+    distributions: list[float] = []
+    for feature_index in range(channel_values.shape[1]):
+        values = channel_values[:, feature_index]
+        distributions.extend(
+            [
+                float(np.median(values)),
+                float(np.percentile(values, 75) - np.percentile(values, 25)),
+                float(np.percentile(values, 90)),
+            ]
+        )
+    if window.shape[0] > 1:
+        correlation = np.corrcoef(window)
+        upper = correlation[np.triu_indices(window.shape[0], k=1)]
+        median_absolute_correlation = float(np.nanmedian(np.abs(upper)))
+    else:
+        median_absolute_correlation = 0.0
 
     return np.asarray(
-        relative_values
-        + log_power_values
+        distributions
         + [
-            float(np.median(np.log1p(rms))),
-            float(np.median(np.log1p(line_length))),
-            float(np.median(entropy)),
+            median_absolute_correlation,
             float(keep.sum() / total_channel_count),
         ],
         dtype=float,

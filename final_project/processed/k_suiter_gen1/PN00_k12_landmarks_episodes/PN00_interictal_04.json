@@ -1,0 +1,53 @@
+{
+  "config": {
+    "alarm_off_consecutive": 13,
+    "alarm_on_consecutive": 2,
+    "bin_seconds": 5,
+    "context_seconds": 120,
+    "false_alarm_target_per_hour": 5.0,
+    "horizon_seconds": 300,
+    "included_eeg_channels": [
+      "C3",
+      "F9",
+      "F7",
+      "FC6",
+      "FC2",
+      "PZ",
+      "O1",
+      "P3",
+      "F10",
+      "FZ",
+      "O2",
+      "F8"
+    ],
+    "interictal_buffer_seconds": 300,
+    "interictal_controls_per_seizure": 4,
+    "l2_regularization": 0.0001,
+    "learning_rate": 0.07,
+    "max_iter": 120,
+    "max_leaf_nodes": 15,
+    "min_eeg_channels": 8,
+    "min_samples_leaf": 80,
+    "minimum_development_sensitivity": null,
+    "pre_onset_seconds": 300,
+    "random_seed": 42,
+    "target_sample_rate": 64,
+    "test_fraction": 0.25,
+    "warning_time_target": 0.25
+  },
+  "manifest": [
+    {
+      "anchor_seconds": 1740.0,
+      "dataset_split": "train",
+      "edf_path": "C:\\Users\\sahil\\Documents\\cosmos\\26-the-optimizers-analysis\\final_project\\data\\raw\\PN00\\PN00-1.edf",
+      "episode_id": "PN00_interictal_04",
+      "episode_type": "interictal",
+      "event_onset_seconds": null,
+      "patient_id": "PN00",
+      "recording": "PN00-1.edf",
+      "source_event_id": "PN00_S01",
+      "training_episode_end_seconds": 2040.0
+    }
+  ],
+  "module_version": "7.0.0"
+}

@@ -373,8 +373,15 @@ class KSuiter:
         self,
         patient: pc.PatientFeatureData,
         project_dir: str | Path,
+        manifest: pd.DataFrame | None = None,
     ) -> list[str]:
-        """Select stable channels and evaluate only on the final held-out event."""
+        """Select channels, then optionally evaluate them with the Gen1 model.
+
+        ``manifest`` is required for the Gen1 second-stage evaluation because
+        Gen1 builds a different landmark feature schema directly from EDF
+        recordings. Channel selection itself continues to use the cached
+        patient-local features.
+        """
         result = load_k_finder_result(project_dir)
         channel_map = self._validate_patient(patient, result.k)
         config = replace(self.config, k=result.k, swap_refinement=False)
@@ -450,6 +457,14 @@ class KSuiter:
         self.held_out_event_id_ = final_event
         self.patient_id_ = str(patient.patient_id)
         self.k_ = int(result.k)
+        if manifest is not None:
+            self._evaluate_gen1(
+                manifest=manifest,
+                selected_channels=selected,
+                project_dir=project_dir,
+                final_event=final_event,
+                development_events=development_events,
+            )
         self.recommendations_ = [
             ChannelRecommendation(
                 rank=index,
@@ -472,6 +487,72 @@ class KSuiter:
         self.ranking_.insert(0, "rank", np.arange(1, len(trace) + 1))
         self.k_finder_result_ = result
         return selected
+
+    def _evaluate_gen1(
+        self,
+        *,
+        manifest: pd.DataFrame,
+        selected_channels: Sequence[str],
+        project_dir: str | Path,
+        final_event: str,
+        development_events: Sequence[str],
+    ) -> None:
+        """Evaluate the selected channels with the Gen1 forecasting model."""
+
+        manifest = manifest.copy()
+        if manifest["patient_id"].astype(str).nunique() != 1:
+            raise ValueError("Gen1 evaluation manifest must contain one patient.")
+        if str(manifest["patient_id"].iloc[0]) != self.patient_id_:
+            raise ValueError("Gen1 evaluation manifest does not match the patient.")
+        selected_channels = tuple(selected_channels)
+        gen1_config = rsf.ForecastConfig(
+            included_eeg_channels=selected_channels,
+            random_seed=42,
+            interictal_controls_per_seizure=4,
+        )
+        gen1_cache_dir = Path(project_dir) / "data" / "processed" / "k_suiter_gen1"
+        cache_tag = f"{self.patient_id_}_k{len(selected_channels)}"
+        gen1_landmarks = rsf.build_landmark_dataset(
+            manifest,
+            cache_csv=gen1_cache_dir / f"{cache_tag}_landmarks.csv",
+            cache_metadata_json=gen1_cache_dir / f"{cache_tag}_landmarks.json",
+            config=gen1_config,
+            force=False,
+            verbose=False,
+        )
+        event_values = gen1_landmarks["source_event_id"].astype(str)
+        development = gen1_landmarks.loc[
+            event_values.isin([str(event) for event in development_events])
+        ].copy()
+        held_out = gen1_landmarks.loc[event_values.eq(str(final_event))].copy()
+        model = rsf.fit_hazard_model(development, gen1_config)
+        predictions, metrics, patient_metrics, threshold, _ = rsf.evaluate_forecasts(
+            model,
+            development,
+            held_out,
+            warning_time_target=gen1_config.warning_time_target,
+            config=gen1_config,
+        )
+        metric_values = dict(zip(metrics["metric"], metrics["value"], strict=True))
+        self.gen1_metrics_ = metrics.copy()
+        self.gen1_patient_metrics_ = patient_metrics.copy()
+        self.gen1_predictions_ = predictions
+        self.gen1_final_holdout_metrics_ = {
+            "held_out_source_event_id": str(final_event),
+            "model": "gen1",
+            "seizure_sensitivity": float(
+                patient_metrics.iloc[0]["sensitivity"]
+            ),
+            "false_alarms_per_hour": float(
+                patient_metrics.iloc[0]["false_alarms_per_hour"]
+            ),
+            "time_in_warning": float(
+                patient_metrics.iloc[0]["time_in_warning"]
+            ),
+            "auroc": float(metric_values.get(f"{gen1_config.horizon_seconds / 60:g}-minute AUROC", np.nan)),
+            "auprc": float(metric_values.get(f"{gen1_config.horizon_seconds / 60:g}-minute average precision", np.nan)),
+            "warning_threshold": float(threshold),
+        }
 
     def save_recommendation(
         self,
@@ -498,6 +579,13 @@ class KSuiter:
         self.ranking_.to_csv(csv_path, index=False)
         stability_path = output_dir / f"{stem}_stability.csv"
         self.stability_.to_csv(stability_path, index=False)
+        gen1_metrics_path = None
+        gen1_patient_metrics_path = None
+        if hasattr(self, "gen1_metrics_"):
+            gen1_metrics_path = output_dir / f"{stem}_gen1_metrics.csv"
+            gen1_patient_metrics_path = output_dir / f"{stem}_gen1_patient_metrics.csv"
+            self.gen1_metrics_.to_csv(gen1_metrics_path, index=False)
+            self.gen1_patient_metrics_.to_csv(gen1_patient_metrics_path, index=False)
         payload = {
             "patient_id": self.patient_id_,
             "k": self.k_,
@@ -510,8 +598,14 @@ class KSuiter:
             "stability_csv": stability_path.name,
             "stability_frequency": self.stability_frequency_,
             "development_source_event_ids": self.development_event_ids_,
-            "final_held_out_metrics": self.final_holdout_metrics_,
+            "final_held_out_metrics": getattr(
+                self, "gen1_final_holdout_metrics_", self.final_holdout_metrics_
+            ),
+            "selector_final_held_out_metrics": self.final_holdout_metrics_,
         }
+        if gen1_metrics_path is not None:
+            payload["gen1_metrics_csv"] = gen1_metrics_path.name
+            payload["gen1_patient_metrics_csv"] = gen1_patient_metrics_path.name
         json_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
         return json_path, csv_path
 
@@ -533,11 +627,14 @@ def recommend_and_save_from_k_finder(
     project_dir: str | Path,
     output_dir: str | Path | None = None,
     config: pc.PersonalizedConfig | None = None,
+    manifest: pd.DataFrame | None = None,
 ) -> tuple[list[str], Path, Path]:
     """Use K-Finder's saved K and persist K-Suiter's channel handoff files."""
 
     suiter = KSuiter(config=config)
-    channels = suiter.recommend_from_k_finder(patient, project_dir)
+    channels = suiter.recommend_from_k_finder(
+        patient, project_dir, manifest=manifest
+    )
     destination = (
         Path(project_dir) / "results" / "k_suiter"
         if output_dir is None
