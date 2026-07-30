@@ -14,7 +14,15 @@ import numpy as np
 import personalized_channels_workflow as pc
 import rolling_seizure_forecasting as rsf
 import split_eeg_channels as split_eeg
-from seizure_sensor_selection import CohortSensorCountSelector, CountCurvePoint
+from seizure_sensor_selection import (
+    CohortSensorCountSelector,
+    CountCurvePoint,
+    DEFAULT_NONINFERIORITY_MARGIN,
+)
+
+# User input: maximum AUPRC loss accepted when reducing the sensor count.
+# All count selection and plot/report thresholds derive from this value.
+ACCEPTED_AUPRC_LOSS = DEFAULT_NONINFERIORITY_MARGIN
 
 
 EXPECTED_SUBJECTS = 14
@@ -223,7 +231,7 @@ def pooled_cohort_features(
 
 def run_step1(
     *,
-    margin: float = 0.02,
+    margin: float = ACCEPTED_AUPRC_LOSS,
     confidence: float = 0.95,
     inner_splits: int = 4,
     n_jobs: int = -1,
@@ -281,7 +289,12 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description="Print the cohort-level EEG sensor count K."
     )
-    parser.add_argument("--margin", type=float, default=0.02)
+    parser.add_argument(
+        "--margin",
+        type=float,
+        default=ACCEPTED_AUPRC_LOSS,
+        help="Maximum accepted AUPRC loss versus all sensors.",
+    )
     parser.add_argument("--confidence", type=float, default=0.95)
     parser.add_argument("--inner-splits", type=int, default=4)
     parser.add_argument("--n-jobs", type=int, default=-1)
