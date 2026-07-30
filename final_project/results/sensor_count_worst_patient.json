@@ -1,6 +1,6 @@
 {
-  "strict_count": 12,
-  "allowed_loss": 0.029999,
-  "worst_held_out_patient_loss": 0.02999230272407971,
-  "next_smaller_count_loss": 0.08171536817860159
+  "strict_count": 22,
+  "allowed_loss": 0.0297,
+  "worst_held_out_patient_loss": 0.02767445451731254,
+  "next_smaller_count_loss": 0.03814379011644353
 }
