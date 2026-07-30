@@ -467,10 +467,34 @@ class CohortSensorCountSelector:
         k = int(self._smallest_noninferior_k(scores))
 
         # Retain count-level diagnostics only. Sensor identities belong to later
-        # personalized/generalized selection steps.
+        # personalized/generalized selection steps.  Per-subject scores support
+        # a stricter, worst-subject channel-count audit without retaining names.
         self.k_ = k
+        self.subject_scores_ = scores.copy()
         self.count_curve_ = self._count_curve(scores, k)
         return k
+
+    def smallest_k_with_max_loss(self, max_loss: float = 0.02) -> int:
+        """Return the smallest count whose observed loss is bounded for every subject.
+
+        Call :meth:`select_k` first.  Unlike the default non-inferiority rule,
+        this is a descriptive worst-subject criterion: every held-out subject's
+        score at ``k`` must be no more than ``max_loss`` below its score using
+        all sensors.  It is not a population-level statistical guarantee.
+        """
+
+        if max_loss < 0:
+            raise ValueError("max_loss cannot be negative.")
+        if not hasattr(self, "subject_scores_"):
+            raise RuntimeError("Call select_k before auditing the maximum loss.")
+        full_scores = self.subject_scores_[:, -1]
+        losses = full_scores[:, None] - self.subject_scores_
+        acceptable = np.max(losses, axis=0) <= max_loss
+        candidates = np.flatnonzero(acceptable)
+        if candidates.size == 0:
+            raise RuntimeError("The full-sensor model must satisfy max_loss=0.")
+        self.max_loss_curve_ = np.max(losses, axis=0)
+        return int(candidates[0] + 1)
 
 
 def select_sensor_count(

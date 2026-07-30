@@ -1,5 +1,5 @@
 {
-  "K": 4,
+  "K": 2,
   "full_sensor_count": 29,
   "n_subjects": 14,
   "n_rows": 14100,
@@ -7,10 +7,10 @@
   "signal_source": "data/raw/splitdata channel arrays",
   "evaluation": "greedy sensor probability ensemble",
   "scoring": "average_precision",
-  "noninferiority_margin": 0.02,
+  "noninferiority_margin": 0.03,
   "confidence": 0.95,
   "inner_splits": 4,
   "outer_validation": "leave_one_subject_out",
   "random_state": 42,
-  "runtime_seconds": 211.0532729625702
+  "runtime_seconds": 102.23218750953674
 }

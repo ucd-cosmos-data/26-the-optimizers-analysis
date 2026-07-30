@@ -299,17 +299,17 @@ def _per_channel_micro_features(
         axis=1,
     )
     analysis = (frequencies >= 0.5) & (frequencies <= 45.0)
-    total_power = np.trapz(psd[:, analysis], frequencies[analysis], axis=1)
+    total_power = np.trapezoid(psd[:, analysis], frequencies[analysis], axis=1)
     total_power = np.clip(total_power, 1e-12, None)
     columns: list[np.ndarray] = []
     for low, high in BANDS.values():
         mask = (frequencies >= low) & (frequencies < high)
-        band_power = np.trapz(psd[:, mask], frequencies[mask], axis=1)
+        band_power = np.trapezoid(psd[:, mask], frequencies[mask], axis=1)
         band_power = np.clip(band_power, 1e-12, None)
         columns.append(band_power / total_power)
     for low, high in BANDS.values():
         mask = (frequencies >= low) & (frequencies < high)
-        band_power = np.trapz(psd[:, mask], frequencies[mask], axis=1)
+        band_power = np.trapezoid(psd[:, mask], frequencies[mask], axis=1)
         columns.append(np.log10(np.clip(band_power, 1e-12, None)))
     rms = np.sqrt(np.mean(np.square(window), axis=1))
     line_length = np.mean(np.abs(np.diff(window, axis=1)), axis=1)
