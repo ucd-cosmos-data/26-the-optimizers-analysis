@@ -12,5 +12,5 @@
   "inner_splits": 4,
   "outer_validation": "leave_one_subject_out",
   "random_state": 42,
-  "runtime_seconds": 150.17321586608887
+  "runtime_seconds": 68.91552829742432
 }
