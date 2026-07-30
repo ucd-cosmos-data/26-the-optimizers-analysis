@@ -7,7 +7,7 @@
   ],
   "selection_method": "patient-specific expanding chronological validation",
   "value_function": "validation AUPRC - 0.25 * validation Brier score",
-  "k_finder_result_path": "/Users/advaitghosh/Documents/cosmos/26-the-optimizers-analysis/final_project/results/sensor_count_step1.json",
+  "k_finder_result_path": "C:\\Users\\sahil\\Documents\\cosmos\\26-the-optimizers-analysis\\final_project\\results\\sensor_count_step1.json",
   "k_finder_metadata": {
     "K": 2,
     "full_sensor_count": 29,
@@ -22,7 +22,7 @@
     "inner_splits": 4,
     "outer_validation": "leave_one_subject_out",
     "random_state": 42,
-    "runtime_seconds": 65.54388904571533
+    "runtime_seconds": 68.91552829742432
   },
   "ranking_csv": "k_suiter_PN00_k2_ranking.csv",
   "stability_csv": "k_suiter_PN00_k2_stability.csv",
@@ -69,9 +69,9 @@
     "seizure_sensitivity": 1.0,
     "false_alarms_per_hour": 0.0,
     "time_in_warning": 0.07666666666666666,
-    "auroc": 0.778125,
-    "auprc": 0.7250956604084892,
-    "binary_brier": 0.0962514774446745,
-    "warning_threshold": 0.9509516231650562
+    "auroc": 0.7781250000000001,
+    "auprc": 0.725095660408489,
+    "binary_brier": 0.09625135923879943,
+    "warning_threshold": 0.9509517845534001
   }
 }

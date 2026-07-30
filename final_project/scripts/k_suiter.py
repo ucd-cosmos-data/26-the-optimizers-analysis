@@ -27,7 +27,7 @@ import personalized_channels_workflow as pc
 import rolling_seizure_forecasting as rsf
 
 
-K_FINDER_RESULT_NAME = "sensor_count_step1.json"
+K_FINDER_RESULT_NAME = "sensor_count_selected.json"
 STABILITY_BONUS = 0.05
 
 
@@ -44,7 +44,8 @@ def load_k_finder_result(project_dir: str | Path) -> KFinderResult:
     """Load the authoritative count written by K-Finder.
 
     K-Finder deliberately selects a cohort-level *count*, while K-Suiter
-    selects patient-specific identities.  Reading this one versioned artifact
+    selects patient-specific identities. The authoritative handoff uses the
+    strict worst-held-out-patient rule. Reading this one versioned artifact
     prevents copying a displayed notebook value into a second notebook.
     """
 

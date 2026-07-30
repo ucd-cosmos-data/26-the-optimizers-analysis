@@ -87,9 +87,15 @@ def test_rejects_k_larger_than_available_channels():
 def test_k_finder_handoff_is_loaded_and_saved_without_manual_copy(tmp_path):
     results = tmp_path / "results"
     results.mkdir()
-    source = results / "sensor_count_step1.json"
+    source = results / "sensor_count_selected.json"
     source.write_text(
-        json.dumps({"K": 2, "noninferiority_margin": 0.02}),
+        json.dumps(
+            {
+                "K": 2,
+                "selection_rule": "worst_held_out_patient",
+                "allowed_auprc_loss": 0.02,
+            }
+        ),
         encoding="utf-8",
     )
 
@@ -103,7 +109,7 @@ def test_k_finder_handoff_is_loaded_and_saved_without_manual_copy(tmp_path):
     assert len(channels) == 2
     assert saved["k"] == 2
     assert saved["included_eeg_channels"] == channels
-    assert saved["k_finder_metadata"]["noninferiority_margin"] == 0.02
+    assert saved["k_finder_metadata"]["allowed_auprc_loss"] == 0.02
     assert saved["final_held_out_metrics"]["held_out_source_event_id"] == "E3"
     assert saved["development_source_event_ids"] == ["E0", "E1", "E2"]
     assert (recommendation_path.parent / saved["stability_csv"]).exists()
@@ -113,7 +119,9 @@ def test_k_finder_handoff_is_loaded_and_saved_without_manual_copy(tmp_path):
 def test_k_finder_handoff_requires_a_final_untouched_event(tmp_path):
     results = tmp_path / "results"
     results.mkdir()
-    (results / "sensor_count_step1.json").write_text('{"K": 2}', encoding="utf-8")
+    (results / "sensor_count_selected.json").write_text(
+        '{"K": 2}', encoding="utf-8"
+    )
     with pytest.raises(ValueError, match="at least three seizure events"):
         k_suiter.recommend_and_save_from_k_finder(
             _patient(n_events=2), project_dir=tmp_path
@@ -126,6 +134,8 @@ def test_k_finder_handoff_rejects_missing_or_invalid_result(tmp_path):
 
     results = tmp_path / "results"
     results.mkdir()
-    (results / "sensor_count_step1.json").write_text('{"K": 0}', encoding="utf-8")
+    (results / "sensor_count_selected.json").write_text(
+        '{"K": 0}', encoding="utf-8"
+    )
     with pytest.raises(ValueError, match="invalid K"):
         k_suiter.load_k_finder_result(tmp_path)
