@@ -41,6 +41,9 @@ from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import StandardScaler
 
 
+DEFAULT_NONINFERIORITY_MARGIN = 0.02
+
+
 FloatArray = NDArray[np.float64]
 IntArray = NDArray[np.int_]
 IndexSplit = tuple[NDArray[np.int_], NDArray[np.int_]]
@@ -110,7 +113,7 @@ class CohortSensorCountSelector:
         estimator: BaseEstimator | None = None,
         *,
         scoring: str | ProbabilityScorer = "average_precision",
-        noninferiority_margin: float = 0.02,
+        noninferiority_margin: float = DEFAULT_NONINFERIORITY_MARGIN,
         confidence: float = 0.95,
         inner_splits: int = 4,
         outer_splits: int | None = None,
@@ -474,7 +477,9 @@ class CohortSensorCountSelector:
         self.count_curve_ = self._count_curve(scores, k)
         return k
 
-    def smallest_k_with_max_loss(self, max_loss: float = 0.02) -> int:
+    def smallest_k_with_max_loss(
+        self, max_loss: float = DEFAULT_NONINFERIORITY_MARGIN
+    ) -> int:
         """Return the smallest count whose observed loss is bounded for every subject.
 
         Call :meth:`select_k` first.  Unlike the default non-inferiority rule,
@@ -504,7 +509,7 @@ def select_sensor_count(
     subjects: ArrayLike,
     estimator: BaseEstimator | None = None,
     scoring: str | ProbabilityScorer = "average_precision",
-    noninferiority_margin: float = 0.02,
+    noninferiority_margin: float = DEFAULT_NONINFERIORITY_MARGIN,
     confidence: float = 0.95,
     inner_splits: int = 4,
     outer_splits: int | None = None,
