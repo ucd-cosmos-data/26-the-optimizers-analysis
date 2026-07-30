@@ -1,0 +1,20 @@
+{
+  "mean_P_cross_entropy": 0.6703289382676746,
+  "mean_G_cross_entropy": 0.5522444659535118,
+  "median_P_cross_entropy": 0.579018467032271,
+  "median_G_cross_entropy": 0.4777341140351835,
+  "mean_G_minus_P_cross_entropy": -0.11808447231416275,
+  "median_G_minus_P_cross_entropy": -0.0054292002116839155,
+  "bootstrap_95_ci_lower": -0.36341172209226397,
+  "bootstrap_95_ci_upper": 0.03575101035516208,
+  "exact_two_sided_sign_flip_p": 0.6875,
+  "patients_P_lower_loss": 2,
+  "patients_G_lower_loss": 3,
+  "patients_tied": 0,
+  "n_patients": 5,
+  "bootstrap_repeats": 10000,
+  "random_seed": 42,
+  "uncertainty_note": "Only five patients are available. The bootstrap interval is descriptive; the exact sign-flip test is the safer small-sample check.",
+  "selected_k": 16,
+  "interpretation": "G minus P: positive values favor P because lower cross-entropy is better."
+}

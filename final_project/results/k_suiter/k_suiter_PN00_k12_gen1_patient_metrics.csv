@@ -1,2 +1,0 @@
-patient_id,landmarks,seizure_episodes,interictal_episodes,auroc,sensitivity,time_in_warning,false_alarms_per_hour,captured_seizures,total_seizures,median_warning_lead_seconds
-PN00,300,1,4,0.9115277777777777,0.0,0.0,0.0,0.0,1.0,

@@ -1,0 +1,6 @@
+patient_id,landmark_rows,episodes,seizures,available_channels,shared_channels_used,sensor_contexts_with_any_rejected_5s_window_fraction,feature_value_missing_fraction,landmarks_with_any_missing_feature_fraction,infinite_feature_values,controls_reassigned_to_prevent_split_leakage,controls_dropped_for_preictal_overlap,duplicate_raw_landmark_rows_removed,raw_interval_cross_group_overlaps_after,exact_feature_hashes_crossing_groups_after
+PN00,936,25,5,29,29,0.03407751252578839,0.00030525030525030525,0.007478632478632479,0,15,0,564,0,0
+PN06,1500,25,5,31,29,0.028666666666666667,0.00045320197044334973,0.03333333333333333,0,0,0,0,0,0
+PN10,3000,50,10,31,29,0.056310344827586206,0.0017766830870279146,0.018666666666666668,0,0,0,0,0,0
+PN12,1200,20,4,31,29,0.006522988505747127,8.210180623973728e-05,0.006666666666666667,0,0,0,0,0,0
+PN14,1200,20,4,31,29,0.003735632183908046,7.389162561576354e-05,0.005833333333333334,0,0,0,0,0,0

@@ -1,4 +1,0 @@
-metric,value,definition
-Sensitivity,0.625,Seizure episode had an alarm after 2 consecutive high-risk readings.
-AUROC,0.7152593315972223,Landmark-level causally smoothed risk discrimination (alpha=0.05).
-False alarms / hour,4.125,Interictal persistent-alarm starts per monitored hour.

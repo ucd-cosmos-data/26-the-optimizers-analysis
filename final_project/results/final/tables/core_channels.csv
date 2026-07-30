@@ -1,0 +1,4 @@
+model,definition,n_core_channels,core_channels
+P,intersection across all five selected channel sets,1,FC6
+G,intersection across all five selected channel sets,6,"C3, FC5, O1, O2, P4, PZ"
+P_and_G,intersection across all ten P and G channel sets,0,

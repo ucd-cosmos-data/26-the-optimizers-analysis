@@ -1,6 +1,0 @@
-patient_id,step,action,channel,channels,selection_score,validation_auprc,validation_brier,random_repeat,random_test_auprc,random_test_auroc
-PN05,1.0,add,T4,T4,0.8283008965240162,0.9472168218298012,0.4756637012231398,,,
-PN05,2.0,add,P9,"T4, P9",0.8756726155529171,1.0,0.4973095377883315,,,
-PN05,3.0,add,FC2,"T4, P9, FC2",0.8750098997210508,1.0,0.4999604011157968,,,
-PN05,4.0,add,F3,"T4, P9, FC2, F3",0.8750099794858144,1.0,0.4999600820567424,,,
-PN05,,,,"CP1, FC1, FZ, P3",,,,1.0,0.3634010056003582,0.22555555555555556

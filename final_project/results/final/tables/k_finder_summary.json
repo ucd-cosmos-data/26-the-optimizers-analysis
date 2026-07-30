@@ -1,0 +1,20 @@
+{
+  "selected_k": 16,
+  "full_common_montage_sensors": 29,
+  "patients": 14,
+  "metric": "held-out average precision (AUPRC)",
+  "selection_rule": "smallest K whose observed AUPRC decrease from the full montage is <= 0.03 for every held-out patient",
+  "allowed_worst_patient_auprc_loss": 0.03,
+  "selected_k_worst_patient_auprc_loss": 0.016720636614762585,
+  "selected_k_mean_held_out_auprc": 0.2433913965973788,
+  "full_montage_mean_held_out_auprc": 0.23777489446432173,
+  "mean_held_out_positive_fraction": 0.20860805860805867,
+  "selected_k_patients_below_positive_fraction": 6,
+  "full_montage_patients_below_positive_fraction": 6,
+  "connected_strict_plateau_k": 25,
+  "fragility_warning": "This is an observed preservation result selected on the same 14 outer folds, not a clinical accuracy guarantee. The literal minimum can be an isolated pass because adding weak sensors can hurt an unweighted probability average. The connected plateau is the smallest K for which K and every larger count pass.",
+  "k_minus_1_worst_patient_auprc_loss": 0.042745434898177115,
+  "outer_validation": "leave one complete patient out",
+  "inner_selection": "patient-grouped forward sensor selection",
+  "random_seed": 42
+}

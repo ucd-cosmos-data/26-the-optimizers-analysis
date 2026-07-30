@@ -1,9 +1,0 @@
-{
-  "K": 12,
-  "selection_rule": "worst_held_out_patient",
-  "allowed_auprc_loss": 0.029999,
-  "full_sensor_count": 29,
-  "n_subjects": 14,
-  "cohort_plateau_k": 2,
-  "source_audit": "sensor_count_worst_patient.json"
-}
