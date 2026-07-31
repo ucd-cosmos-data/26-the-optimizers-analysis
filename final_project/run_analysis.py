@@ -6,22 +6,18 @@ import argparse
 import hashlib
 import importlib.metadata
 import json
-from pathlib import Path
 import platform
 import subprocess
-import sys
 import time
+from pathlib import Path
 
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import seaborn as sns
+from matplotlib.lines import Line2D
 
-
-PROJECT = Path(__file__).resolve().parent
-sys.path.insert(0, str(PROJECT))
-
-from src.reduced_sensor_pipeline import (  # noqa: E402
+from src.reduced_sensor_pipeline import (
     ALLOWED_AUPRC_LOSS,
     TARGET_PATIENTS,
     build_clean_cohort_matrix,
@@ -33,6 +29,8 @@ from src.reduced_sensor_pipeline import (  # noqa: E402
     run_personalized_generalized,
     shared_channels,
 )
+
+PROJECT = Path(__file__).resolve().parent
 
 
 def save_k_figure(curve: pd.DataFrame, k: int, output: Path) -> None:
@@ -131,25 +129,45 @@ def save_channel_figure(
         index="model", columns="channel", values="patients_selected"
     )
     matrix = matrix.reindex(["P", "G"])
-    fig, axis = plt.subplots(figsize=(13, 3.1))
-    sns.heatmap(
-        matrix,
-        cmap="YlGnBu",
-        vmin=0,
-        vmax=5,
-        annot=True,
-        fmt=".0f",
-        linewidths=0.5,
-        cbar_kws={"label": "Patients selected (of 5)"},
-        ax=axis,
+    channel_blocks = np.array_split(matrix.columns, 2)
+    fig = plt.figure(figsize=(9.2, 6.4))
+    grid = fig.add_gridspec(
+        3,
+        1,
+        height_ratios=[1, 1, 0.09],
+        hspace=0.62,
     )
-    axis.set(
-        title="How often each channel was selected in the five P and G models",
-        xlabel="EEG channel",
-        ylabel="Selection strategy",
+    axes = [fig.add_subplot(grid[0]), fig.add_subplot(grid[1])]
+    colorbar_axis = fig.add_subplot(grid[2])
+
+    for block_index, (axis, channels) in enumerate(
+        zip(axes, channel_blocks)
+    ):
+        sns.heatmap(
+            matrix.loc[:, channels],
+            cmap="YlGnBu",
+            vmin=0,
+            vmax=5,
+            annot=True,
+            fmt=".0f",
+            linewidths=0.5,
+            cbar=block_index == 0,
+            cbar_ax=colorbar_axis if block_index == 0 else None,
+            cbar_kws={
+                "label": "Patients selected (of 5)",
+                "orientation": "horizontal",
+            },
+            ax=axis,
+        )
+        axis.set(xlabel="EEG channel", ylabel="")
+        axis.tick_params(axis="x", rotation=45)
+
+    fig.suptitle(
+        "How often each channel was selected in the five P and G models",
+        y=0.98,
     )
-    axis.tick_params(axis="x", rotation=45)
-    fig.tight_layout()
+    fig.supylabel("Selection strategy", x=0.02)
+    fig.subplots_adjust(left=0.10, right=0.98, top=0.91, bottom=0.10)
     fig.savefig(output, dpi=180, bbox_inches="tight")
     plt.close(fig)
 
@@ -176,6 +194,250 @@ def save_quality_figure(quality: pd.DataFrame, output: Path) -> None:
     axis.spines[["top", "right"]].set_visible(False)
     fig.tight_layout()
     fig.savefig(output, dpi=180, bbox_inches="tight")
+    plt.close(fig)
+
+
+def _event_ids(value: object) -> list[str]:
+    if pd.isna(value) or not str(value).strip():
+        return []
+    return [
+        event_id.strip()
+        for event_id in str(value).split(",")
+        if event_id.strip()
+    ]
+
+
+def save_seizure_allocation_figure(
+    results: pd.DataFrame,
+    output: Path,
+) -> None:
+    """Plot the chronological P-model seizure allocation for each patient."""
+    required = {
+        "patient_id",
+        "n_seizures",
+        "n_train_seizures_P",
+        "n_nominal_train_seizures_P",
+        "n_test_seizures",
+        "train_events_excluded_for_recording_isolation",
+    }
+    missing = required.difference(results.columns)
+    if missing:
+        raise ValueError(
+            f"Results are missing required split columns: {sorted(missing)}"
+        )
+
+    plot = results.copy()
+    plot["patient_id"] = plot["patient_id"].astype(str)
+    plot = plot.sort_values("patient_id").reset_index(drop=True)
+    if plot["patient_id"].duplicated().any():
+        raise ValueError("Expected one seizure-allocation row per patient.")
+
+    excluded_counts: list[int] = []
+    for row in plot.itertuples(index=False):
+        excluded_ids = _event_ids(
+            row.train_events_excluded_for_recording_isolation
+        )
+        excluded_count = (
+            int(row.n_nominal_train_seizures_P)
+            - int(row.n_train_seizures_P)
+        )
+        if excluded_count != len(excluded_ids):
+            raise ValueError(
+                f"{row.patient_id} reports {excluded_count} excluded seizures "
+                f"but names {len(excluded_ids)}."
+            )
+        if int(row.n_test_seizures) < 2:
+            raise ValueError(
+                f"{row.patient_id} has fewer than two held-out seizures."
+            )
+        allocated = (
+            int(row.n_train_seizures_P)
+            + excluded_count
+            + int(row.n_test_seizures)
+        )
+        if allocated != int(row.n_seizures):
+            raise ValueError(
+                f"{row.patient_id} allocates {allocated} of "
+                f"{int(row.n_seizures)} seizures."
+            )
+        excluded_counts.append(excluded_count)
+    plot["n_excluded_seizures"] = excluded_counts
+
+    train_color = "#2a9d8f"
+    test_color = "#e76f51"
+    excluded_color = "#7a7f87"
+    row_spacing = 1.45
+    y_positions = np.arange(len(plot), dtype=float) * row_spacing
+    max_seizures = int(plot["n_seizures"].max())
+
+    fig, axis = plt.subplots(figsize=(11.5, 5.8))
+    for y, row in zip(y_positions, plot.itertuples(index=False)):
+        n_train = int(row.n_train_seizures_P)
+        n_excluded = int(row.n_excluded_seizures)
+        n_test = int(row.n_test_seizures)
+        n_total = int(row.n_seizures)
+
+        axis.hlines(
+            y,
+            0.75,
+            n_total + 0.25,
+            color="#d4d7d9",
+            linewidth=1.2,
+            zorder=0,
+        )
+        train_x = np.arange(1, n_train + 1)
+        excluded_x = np.arange(
+            n_train + 1,
+            n_train + n_excluded + 1,
+        )
+        test_x = np.arange(
+            n_train + n_excluded + 1,
+            n_total + 1,
+        )
+        axis.scatter(
+            train_x,
+            np.full(n_train, y),
+            s=150,
+            color=train_color,
+            marker="o",
+            edgecolors="white",
+            linewidths=1.1,
+            zorder=3,
+        )
+        if n_excluded:
+            axis.scatter(
+                excluded_x,
+                np.full(n_excluded, y),
+                s=150,
+                color=excluded_color,
+                marker="X",
+                edgecolors="white",
+                linewidths=0.9,
+                zorder=3,
+            )
+        axis.scatter(
+            test_x,
+            np.full(n_test, y),
+            s=150,
+            color=test_color,
+            marker="s",
+            edgecolors="white",
+            linewidths=1.1,
+            zorder=3,
+        )
+
+        bracket_y = y - 0.34
+        axis.plot(
+            [0.75, 0.75, n_train + 0.25, n_train + 0.25],
+            [bracket_y + 0.11, bracket_y, bracket_y, bracket_y + 0.11],
+            color=train_color,
+            linewidth=1.3,
+            zorder=2,
+        )
+
+        allocation = f"{n_train} train"
+        if n_excluded:
+            allocation += f" · {n_excluded} excluded"
+        allocation += f" · {n_test} test"
+        axis.text(
+            max_seizures + 1.0,
+            y,
+            allocation,
+            ha="left",
+            va="center",
+            fontsize=10,
+        )
+
+    axis.text(
+        0.75,
+        y_positions[0] - 0.68,
+        "Grouped validation rotates within each bracketed training pool",
+        ha="left",
+        va="bottom",
+        color=train_color,
+        fontsize=10,
+        fontweight="bold",
+    )
+    axis.text(
+        max_seizures + 1.0,
+        y_positions[0] - 0.68,
+        "Allocation",
+        ha="left",
+        va="bottom",
+        fontsize=10,
+        fontweight="bold",
+    )
+
+    axis.set_xticks(
+        np.arange(1, max_seizures + 1),
+        [f"S{index:02d}" for index in range(1, max_seizures + 1)],
+    )
+    axis.set_yticks(y_positions, plot["patient_id"].tolist())
+    axis.set_xlim(0.45, max_seizures + 4.1)
+    axis.set_ylim(
+        y_positions[-1] + 0.75,
+        y_positions[0] - 0.95,
+    )
+    axis.set_xlabel("Seizure order: earlier → later", labelpad=12)
+    axis.set_ylabel("")
+    axis.set_title(
+        "Seizure allocation for personalized model evaluation",
+        loc="left",
+        pad=34,
+        fontweight="bold",
+    )
+    axis.tick_params(axis="both", length=0)
+    axis.spines[["top", "right", "bottom", "left"]].set_visible(False)
+    axis.legend(
+        handles=[
+            Line2D(
+                [0],
+                [0],
+                marker="o",
+                color="none",
+                markerfacecolor=train_color,
+                markeredgecolor="white",
+                markersize=10,
+                label="Retained training seizure",
+            ),
+            Line2D(
+                [0],
+                [0],
+                marker="X",
+                color="none",
+                markerfacecolor=excluded_color,
+                markeredgecolor="white",
+                markersize=10,
+                label="Excluded for session isolation",
+            ),
+            Line2D(
+                [0],
+                [0],
+                marker="s",
+                color="none",
+                markerfacecolor=test_color,
+                markeredgecolor="white",
+                markersize=10,
+                label="Held-out test seizure",
+            ),
+        ],
+        loc="upper right",
+        bbox_to_anchor=(1.0, 1.17),
+        frameon=False,
+        ncol=3,
+    )
+    fig.subplots_adjust(
+        left=0.09,
+        right=0.97,
+        top=0.78,
+        bottom=0.17,
+    )
+    fig.savefig(
+        output,
+        dpi=240,
+        bbox_inches="tight",
+        facecolor="white",
+    )
     plt.close(fig)
 
 
@@ -373,6 +635,9 @@ def main() -> None:
         frequencies, figures / "03_channel_selection_frequency.png"
     )
     save_quality_figure(quality, figures / "04_artifact_cleaning.png")
+    save_seizure_allocation_figure(
+        results, figures / "05_seizure_allocation.png"
+    )
 
     run_metadata = {
         "completed": True,

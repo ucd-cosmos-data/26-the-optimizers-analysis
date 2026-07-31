@@ -6,9 +6,9 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-
 PROJECT = Path(__file__).resolve().parents[1]
 TABLES = PROJECT / "results" / "final" / "tables"
+FIGURES = PROJECT / "results" / "final" / "figures"
 
 
 def test_k_summary_matches_the_first_observed_passing_count():
@@ -72,3 +72,38 @@ def test_recording_isolation_is_exposed_in_the_final_table():
     assert pn10["train_events_excluded_for_recording_isolation"] == (
         "PN10_S07, PN10_S08"
     )
+
+
+def test_seizure_allocation_figure_matches_the_final_splits():
+    comparison = pd.read_csv(TABLES / "patient_model_comparison.csv")
+    expected = {
+        "PN00": (3, 0, 2),
+        "PN06": (3, 0, 2),
+        "PN10": (6, 2, 2),
+        "PN12": (2, 0, 2),
+        "PN14": (2, 0, 2),
+    }
+
+    observed: dict[str, tuple[int, int, int]] = {}
+    for row in comparison.itertuples(index=False):
+        excluded = (
+            int(row.n_nominal_train_seizures_P)
+            - int(row.n_train_seizures_P)
+        )
+        allocation = (
+            int(row.n_train_seizures_P)
+            + excluded
+            + int(row.n_test_seizures)
+        )
+        assert allocation == int(row.n_seizures)
+        assert int(row.n_test_seizures) >= 2
+        observed[str(row.patient_id)] = (
+            int(row.n_train_seizures_P),
+            excluded,
+            int(row.n_test_seizures),
+        )
+
+    assert observed == expected
+    figure = FIGURES / "05_seizure_allocation.png"
+    assert figure.read_bytes().startswith(b"\x89PNG\r\n\x1a\n")
+    assert figure.stat().st_size > 10_000

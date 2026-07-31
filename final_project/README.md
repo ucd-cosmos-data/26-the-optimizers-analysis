@@ -197,6 +197,12 @@ entire recording sessions.
 PN10's S07 and S08 occur in the same recording as held-out S09. They are
 excluded from P training rather than allowing recording-session leakage.
 
+![Seizure allocation for personalized model evaluation](results/final/figures/05_seizure_allocation.png)
+
+Each symbol is one seizure. Grouped validation rotates within the bracketed
+training pool; it is not a separate permanent split. The orange test seizures
+remain untouched until final evaluation.
+
 K-suiter ranks channels using training-only out-of-fold cross-entropy:
 
 - **P channels** are selected from that patient's retained training events.
