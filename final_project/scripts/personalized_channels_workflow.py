@@ -132,7 +132,11 @@ def personalized_paths(notebook_dir: str | Path) -> dict[str, Path]:
     return paths
 
 
-def load_manifest(paths: dict[str, Path], forecast_config: rsf.ForecastConfig) -> pd.DataFrame:
+def load_manifest(
+    paths: dict[str, Path],
+    forecast_config: rsf.ForecastConfig,
+    patient_ids: tuple[str, ...] | None = None,
+) -> pd.DataFrame:
     """Load the audited episode manifest, rebuilding it only when possible."""
 
     saved = paths["results"] / "episode_manifest.csv"
@@ -163,6 +167,15 @@ def load_manifest(paths: dict[str, Path], forecast_config: rsf.ForecastConfig) -
     missing = sorted(required - set(manifest.columns))
     if missing:
         raise ValueError(f"Episode manifest is missing columns: {missing}")
+    if patient_ids is not None:
+        requested = {str(patient_id) for patient_id in patient_ids}
+        available = set(manifest["patient_id"].astype(str))
+        unknown = sorted(requested - available)
+        if unknown:
+            raise ValueError(f"Unknown patient IDs: {unknown}")
+        manifest = manifest.loc[
+            manifest["patient_id"].astype(str).isin(requested)
+        ].copy()
     # Saved manifests may contain absolute paths from the computer that created
     # them. Always resolve patient/recording names against this checkout.
     manifest["edf_path"] = [
