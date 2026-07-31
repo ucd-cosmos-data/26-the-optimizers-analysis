@@ -1,0 +1,53 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1300" height="820" viewBox="0 0 1300 820">
+  <rect width="1300" height="820" fill="#ffffff"/>
+  <style>
+    .caption{font:400 15px Arial,sans-serif;fill:#526575}
+    .label{font:600 15px Arial,sans-serif;fill:#213b53}
+    .xlabel{font:700 20px Arial,sans-serif;fill:#102a43}
+    .small{font:400 13px Arial,sans-serif;fill:#526575}
+    .value{font:700 21px Arial,sans-serif;fill:#102a43}
+    .tick{font:400 13px Arial,sans-serif;fill:#526575}
+  </style>
+
+  <rect x="60" y="40" width="260" height="105" fill="#ffffff"/>
+  <text x="82" y="72" class="small">Mean G-model AUPRC</text>
+  <text x="82" y="113" class="value">0.2774</text>
+  <rect x="340" y="40" width="260" height="105" fill="#ffffff"/>
+  <text x="362" y="72" class="small">Mean G-model AUROC</text>
+  <text x="362" y="113" class="value">0.5006</text>
+  <rect x="620" y="40" width="260" height="105" fill="#ffffff"/>
+  <text x="642" y="72" class="small">Mean cross-entropy</text>
+  <text x="642" y="113" class="value">0.5522</text>
+  <rect x="900" y="40" width="340" height="105" fill="#ffffff"/>
+  <text x="922" y="72" class="small">Unweighted mean</text>
+  <text x="922" y="103" class="label">0.277 versus 0.233</text>
+  <text x="922" y="125" class="small">1.19x baseline across five G models</text>
+
+  <rect x="60" y="180" width="1180" height="500" fill="#ffffff" stroke="#aebdca"/>
+  <text x="95" y="220" class="label">Held-out performance by patient (n = 5)</text>
+  <text x="1200" y="220" class="small" text-anchor="end">Bars: G-model AUPRC; dots: prevalence baseline</text>
+  <line x1="135" y1="610" x2="1170" y2="610" stroke="#9ba7af"/>
+  <line x1="135" y1="520" x2="1170" y2="520" stroke="#e7ebed"/>
+  <line x1="135" y1="430" x2="1170" y2="430" stroke="#e7ebed"/>
+  <line x1="135" y1="340" x2="1170" y2="340" stroke="#e7ebed"/>
+  <text x="125" y="615" class="tick" text-anchor="end">0.0</text>
+  <text x="125" y="525" class="tick" text-anchor="end">0.2</text>
+  <text x="125" y="435" class="tick" text-anchor="end">0.4</text>
+  <text x="125" y="345" class="tick" text-anchor="end">0.6</text>
+  <g fill="#23637d">
+    <rect x="210" y="402.6" width="95" height="207.4" rx="5"/>
+    <rect x="390" y="536.1" width="95" height="73.9" rx="5"/>
+    <rect x="570" y="559.5" width="95" height="50.5" rx="5"/>
+    <rect x="750" y="424.4" width="95" height="185.6" rx="5"/>
+    <rect x="930" y="503.2" width="95" height="106.8" rx="5"/>
+  </g>
+  <g fill="#c85f3d" stroke="#ffffff" stroke-width="2">
+    <circle cx="257.5" cy="405.5" r="8"/><circle cx="437.5" cy="497.5" r="8"/><circle cx="617.5" cy="550.0" r="8"/><circle cx="797.5" cy="528.2" r="8"/><circle cx="977.5" cy="545.7" r="8"/>
+  </g>
+  <g class="xlabel" text-anchor="middle">
+    <text x="257.5" y="645">G₀</text><text x="437.5" y="645">G₆</text><text x="617.5" y="645">G₁₀</text><text x="797.5" y="645">G₁₂</text><text x="977.5" y="645">G₁₄</text>
+  </g>
+  <rect x="160" y="710" width="16" height="16" rx="3" fill="#3d7891"/><text x="185" y="723" class="small">G-model AUPRC</text>
+  <circle cx="325" cy="718" r="8" fill="#d47b45"/><text x="345" y="723" class="small">Patient positive-rate baseline</text>
+  <text x="60" y="785" class="caption">Figure. Generalized Gᵢ-model results. Values are macro-averaged across held-out patients; dots denote each patient’s sampled positive fraction.</text>
+</svg>
